@@ -90,6 +90,7 @@
     "winston": "^3.18.3"
   },
   "overrides": {
-    "webidl-conversions": "^7.0.0"
+    "webidl-conversions": "^7.0.0",
+    "parse5": "^6.0.1"
   }
 }
