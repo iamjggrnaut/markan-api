@@ -1,0 +1,40 @@
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { BullModule } from '@nestjs/bull';
+import { IntegrationsService } from './integrations.service';
+import { IntegrationsController } from './integrations.controller';
+import { WebhooksController } from './webhooks.controller';
+import { WebhookRetryProcessor } from './webhook-retry.processor';
+import { MarketplaceAccount } from './marketplace-account.entity';
+import { WebhookEvent } from './webhook-event.entity';
+import { EncryptionService } from './encryption.service';
+import { MarketplaceFactoryService } from './marketplaces/marketplace-factory.service';
+import { WildberriesService } from './marketplaces/wildberries/wildberries.service';
+import { OzonService } from './marketplaces/ozon/ozon.service';
+import { YandexMarketService } from './marketplaces/yandex-market/yandex-market.service';
+import { UsersModule } from '../users/users.module';
+import { OrganizationsModule } from '../organizations/organizations.module';
+
+@Module({
+  imports: [
+    TypeOrmModule.forFeature([MarketplaceAccount, WebhookEvent]),
+    BullModule.registerQueue({
+      name: 'webhook-retry',
+    }),
+    UsersModule,
+    OrganizationsModule,
+  ],
+  controllers: [IntegrationsController, WebhooksController],
+  providers: [
+    IntegrationsService,
+    EncryptionService,
+    MarketplaceFactoryService,
+    WildberriesService,
+    OzonService,
+    YandexMarketService,
+    WebhookRetryProcessor,
+  ],
+  exports: [IntegrationsService, EncryptionService],
+})
+export class IntegrationsModule {}
+
