@@ -447,40 +447,58 @@ export class ProductsService {
   }
 
   async getStockForecast(productId: string, userId: string): Promise<any> {
-    const product = await this.findOne(productId, userId);
+    try {
+      const product = await this.findOne(productId, userId);
 
-    // Получаем продажи за последние 30 дней
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      if (!product) {
+        return {
+          forecastDepletionDays: null,
+          averageDailySales: 0,
+          message: 'Товар не найден',
+        };
+      }
 
-    const recentSales = await this.salesRepository.find({
-      where: {
-        product: { id: productId },
-        saleDate: Between(thirtyDaysAgo, new Date()),
-      },
-    });
+      // Получаем продажи за последние 30 дней
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const totalSales = recentSales.reduce((sum, sale) => sum + sale.quantity, 0);
-    const averageDailySales = totalSales / 30;
+      const recentSales = await this.salesRepository.find({
+        where: {
+          product: { id: productId },
+          saleDate: Between(thirtyDaysAgo, new Date()),
+        },
+      });
 
-    if (averageDailySales === 0) {
+      const totalSales = recentSales.reduce((sum, sale) => sum + sale.quantity, 0);
+      const averageDailySales = totalSales / 30;
+
+      if (averageDailySales === 0) {
+        return {
+          forecastDepletionDays: null,
+          averageDailySales: 0,
+          message: 'Нет данных о продажах',
+        };
+      }
+
+      const forecastDepletionDays = Math.floor(
+        product.availableStock / averageDailySales,
+      );
+
+      return {
+        forecastDepletionDays,
+        averageDailySales: Math.round(averageDailySales * 100) / 100,
+        currentStock: product.availableStock,
+        isCritical: forecastDepletionDays <= 7,
+      };
+    } catch (error) {
+      // Если произошла ошибка, возвращаем безопасный ответ
+      console.error(`Failed to get stock forecast for product ${productId}:`, error);
       return {
         forecastDepletionDays: null,
         averageDailySales: 0,
-        message: 'Нет данных о продажах',
+        message: 'Ошибка при расчете прогноза',
       };
     }
-
-    const forecastDepletionDays = Math.floor(
-      product.availableStock / averageDailySales,
-    );
-
-    return {
-      forecastDepletionDays,
-      averageDailySales: Math.round(averageDailySales * 100) / 100,
-      currentStock: product.availableStock,
-      isCritical: forecastDepletionDays <= 7,
-    };
   }
 
   async getTurnoverRate(productId: string, userId: string): Promise<number> {
@@ -683,46 +701,64 @@ export class ProductsService {
     userId: string,
     organizationId: string | null,
   ): Promise<any[]> {
-    const products = await this.productsRepository
-      .createQueryBuilder('product')
-      .leftJoinAndSelect('product.marketplaceAccount', 'account')
-      .where('account.user.id = :userId', { userId })
-      .andWhere(organizationId ? 'account.organization.id = :organizationId' : '1=1', {
-        organizationId,
-      })
-      .getMany();
+    try {
+      const products = await this.productsRepository
+        .createQueryBuilder('product')
+        .leftJoinAndSelect('product.marketplaceAccount', 'account')
+        .where('account.user.id = :userId', { userId })
+        .andWhere(organizationId ? 'account.organization.id = :organizationId' : '1=1', {
+          organizationId,
+        })
+        .getMany();
 
-    const recommendations = [];
-
-    for (const product of products) {
-      const forecast = await this.getStockForecast(product.id, userId);
-
-      if (
-        forecast.forecastDepletionDays !== null &&
-        forecast.forecastDepletionDays <= 14
-      ) {
-        const recommendedQuantity = Math.ceil(
-          forecast.averageDailySales * 30, // Запас на 30 дней
-        );
-
-        recommendations.push({
-          product: {
-            id: product.id,
-            name: product.name,
-            sku: product.sku,
-          },
-          currentStock: product.availableStock,
-          forecastDepletionDays: forecast.forecastDepletionDays,
-          averageDailySales: forecast.averageDailySales,
-          recommendedQuantity,
-          urgency: forecast.forecastDepletionDays <= 7 ? 'high' : 'medium',
-        });
+      // Если у пользователя нет товаров, возвращаем пустой массив
+      if (!products || products.length === 0) {
+        return [];
       }
-    }
 
-    return recommendations.sort(
-      (a, b) => a.forecastDepletionDays - b.forecastDepletionDays,
-    );
+      const recommendations = [];
+
+      for (const product of products) {
+        try {
+          const forecast = await this.getStockForecast(product.id, userId);
+
+          if (
+            forecast &&
+            forecast.forecastDepletionDays !== null &&
+            forecast.forecastDepletionDays <= 14
+          ) {
+            const recommendedQuantity = Math.ceil(
+              forecast.averageDailySales * 30, // Запас на 30 дней
+            );
+
+            recommendations.push({
+              product: {
+                id: product.id,
+                name: product.name,
+                sku: product.sku,
+              },
+              currentStock: product.availableStock,
+              forecastDepletionDays: forecast.forecastDepletionDays,
+              averageDailySales: forecast.averageDailySales,
+              recommendedQuantity,
+              urgency: forecast.forecastDepletionDays <= 7 ? 'high' : 'medium',
+            });
+          }
+        } catch (error) {
+          // Пропускаем товары с ошибками прогноза
+          console.error(`Failed to get forecast for product ${product.id}:`, error);
+          continue;
+        }
+      }
+
+      return recommendations.sort(
+        (a, b) => (a.forecastDepletionDays || 0) - (b.forecastDepletionDays || 0),
+      );
+    } catch (error) {
+      // Если произошла общая ошибка, возвращаем пустой массив
+      console.error('Failed to get reorder recommendations:', error);
+      return [];
+    }
   }
 }
 
