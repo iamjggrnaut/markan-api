@@ -248,11 +248,10 @@ export class AnalyticsService {
     // Если у пользователя нет аккаунтов, возвращаем пустые метрики
     if (accountIds.length === 0) {
       const emptyMetrics: KPIMetrics = {
-        revenue: { current: 0, previous: 0, change: 0 },
-        profit: { current: 0, previous: 0, change: 0 },
-        sales: { current: 0, previous: 0, change: 0 },
-        orders: { current: 0, previous: 0, change: 0 },
-        averageOrderValue: { current: 0, previous: 0, change: 0 },
+        revenue: { current: 0, previous: 0, change: 0, changePercent: 0 },
+        profit: { current: 0, previous: 0, change: 0, changePercent: 0 },
+        orders: { current: 0, previous: 0, change: 0, changePercent: 0 },
+        averageOrderValue: { current: 0, previous: 0, change: 0, changePercent: 0 },
       };
       await this.cacheManager.set(cacheKey, emptyMetrics, 300);
       return emptyMetrics;
