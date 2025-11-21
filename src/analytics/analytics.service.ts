@@ -84,6 +84,24 @@ export class AnalyticsService {
     const accounts = await this.accountsRepository.find({ where });
     const accountIds = accounts.map((a) => a.id);
 
+    // Если у пользователя нет аккаунтов, возвращаем пустую статистику
+    if (accountIds.length === 0) {
+      const emptyStats: DashboardStats = {
+        totalRevenue: 0,
+        totalProfit: 0,
+        totalSales: 0,
+        averageOrderValue: 0,
+        conversionRate: 0,
+        growthRate: 0,
+        topProducts: [],
+        salesByMarketplace: [],
+        salesByPeriod: [],
+      };
+      // Сохраняем в кеш на 5 минут
+      await this.cacheManager.set(cacheKey, emptyStats, 300);
+      return emptyStats;
+    }
+
     // Оптимизированный запрос - выбираем только нужные поля
     const sales = await this.salesRepository
       .createQueryBuilder('sale')
@@ -140,12 +158,15 @@ export class AnalyticsService {
     );
     const previousPeriodEnd = new Date(startDate);
 
-    const previousSales = await this.salesRepository.find({
-      where: {
-        marketplaceAccount: { id: In(accountIds) },
-        saleDate: Between(previousPeriodStart, previousPeriodEnd),
-      },
-    });
+    // Если нет аккаунтов, предыдущие продажи тоже пустые
+    const previousSales = accountIds.length > 0
+      ? await this.salesRepository.find({
+          where: {
+            marketplaceAccount: { id: In(accountIds) },
+            saleDate: Between(previousPeriodStart, previousPeriodEnd),
+          },
+        })
+      : [];
 
     const previousRevenue = previousSales.reduce(
       (sum, sale) => sum + Number(sale.totalAmount),
@@ -223,6 +244,19 @@ export class AnalyticsService {
 
     const accounts = await this.accountsRepository.find({ where });
     const accountIds = accounts.map((a) => a.id);
+
+    // Если у пользователя нет аккаунтов, возвращаем пустые метрики
+    if (accountIds.length === 0) {
+      const emptyMetrics: KPIMetrics = {
+        revenue: { current: 0, previous: 0, change: 0 },
+        profit: { current: 0, previous: 0, change: 0 },
+        sales: { current: 0, previous: 0, change: 0 },
+        orders: { current: 0, previous: 0, change: 0 },
+        averageOrderValue: { current: 0, previous: 0, change: 0 },
+      };
+      await this.cacheManager.set(cacheKey, emptyMetrics, 300);
+      return emptyMetrics;
+    }
 
     const [currentSales, previousSales] = await Promise.all([
       this.salesRepository.find({
