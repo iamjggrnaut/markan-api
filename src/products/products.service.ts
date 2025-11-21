@@ -36,12 +36,13 @@ export class ProductsService {
     organizationId: string | null,
     filter: ProductFilterDto,
   ): Promise<{ products: Product[]; total: number }> {
-    const queryBuilder = this.productsRepository
-      .createQueryBuilder('product')
-      .leftJoinAndSelect('product.marketplaceAccount', 'account')
-      .leftJoinAndSelect('product.category', 'category')
-      .leftJoinAndSelect('product.stocks', 'stocks')
-      .where('account.user.id = :userId', { userId });
+    try {
+      const queryBuilder = this.productsRepository
+        .createQueryBuilder('product')
+        .leftJoinAndSelect('product.marketplaceAccount', 'account')
+        .leftJoinAndSelect('product.category', 'category')
+        .leftJoinAndSelect('product.stocks', 'stocks')
+        .where('account.user.id = :userId', { userId });
 
     if (organizationId) {
       queryBuilder.andWhere('account.organization.id = :organizationId', {
@@ -108,9 +109,14 @@ export class ProductsService {
 
     queryBuilder.skip(skip).take(limit);
 
-    const [products, total] = await queryBuilder.getManyAndCount();
+      const [products, total] = await queryBuilder.getManyAndCount();
 
-    return { products, total };
+      return { products: products || [], total: total || 0 };
+    } catch (error) {
+      // Если произошла ошибка (например, нет аккаунтов), возвращаем пустой результат
+      console.error('Failed to get products:', error);
+      return { products: [], total: 0 };
+    }
   }
 
   async findOne(id: string, userId: string): Promise<Product> {
