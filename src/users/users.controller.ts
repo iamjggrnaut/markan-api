@@ -14,6 +14,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UsersService } from './users.service';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateSettingsDto } from './dto/update-settings.dto';
 import { GDPRRequestDto, GDPRRequestType } from './dto/gdpr-request.dto';
 
 @ApiTags('Users')
@@ -39,6 +40,18 @@ export class UsersController {
   @ApiOperation({ summary: 'Получить историю активности' })
   getMyActivities(@Request() req, @Query('limit') limit?: number) {
     return this.usersService.getActivities(req.user.userId, limit);
+  }
+
+  @Get('me/settings')
+  @ApiOperation({ summary: 'Получить настройки пользователя' })
+  getSettings(@Request() req) {
+    return this.usersService.getSettings(req.user.userId);
+  }
+
+  @Put('me/settings')
+  @ApiOperation({ summary: 'Обновить настройки пользователя' })
+  updateSettings(@Request() req, @Body() updateSettingsDto: UpdateSettingsDto) {
+    return this.usersService.updateSettings(req.user.userId, updateSettingsDto);
   }
 
   @Post('me/gdpr-request')
