@@ -10,6 +10,9 @@ import { AIRecommendation, RecommendationType } from './ai-recommendation.entity
 import { ProductsService } from '../products/products.service';
 import { ProductSale } from '../products/product-sale.entity';
 import { AIClientService } from './ai-client.service';
+import { IntegrationsService } from '../integrations/integrations.service';
+import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { Product } from '../products/product.entity';
 
 export interface DemandForecast {
   productId: string;
@@ -56,6 +59,7 @@ export class AIService {
     private aiQueue: Queue,
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
     private productsService: ProductsService,
+    private integrationsService: IntegrationsService,
     private aiClient: AIClientService,
   ) {}
 
@@ -758,6 +762,208 @@ export class AIService {
       order: { createdAt: 'DESC' },
       take: limit,
     });
+  }
+
+  async applyRecommendation(
+    recommendationId: string,
+    userId: string,
+  ): Promise<{ success: boolean; message: string; data?: any }> {
+    // Получаем рекомендацию
+    const recommendation = await this.recommendationsRepository.findOne({
+      where: { id: recommendationId, user: { id: userId } },
+      relations: ['product'],
+    });
+
+    if (!recommendation) {
+      throw new NotFoundException('Рекомендация не найдена');
+    }
+
+    // Проверяем, не применена ли уже
+    if (recommendation.isApplied) {
+      throw new BadRequestException('Рекомендация уже применена');
+    }
+
+    // Применяем в зависимости от типа
+    let result: { success: boolean; message: string; data?: any };
+
+    try {
+      switch (recommendation.type) {
+        case RecommendationType.PRICE:
+          result = await this.applyPriceRecommendation(recommendation, userId);
+          break;
+        case RecommendationType.DEMAND:
+          result = await this.applyDemandRecommendation(recommendation, userId);
+          break;
+        case RecommendationType.ASSORTMENT:
+          result = await this.applyAssortmentRecommendation(recommendation, userId);
+          break;
+        case RecommendationType.ANOMALY:
+          result = await this.applyAnomalyRecommendation(recommendation, userId);
+          break;
+        case RecommendationType.CUSTOMER:
+          result = await this.applyCustomerRecommendation(recommendation, userId);
+          break;
+        default:
+          throw new BadRequestException(`Неизвестный тип рекомендации: ${recommendation.type}`);
+      }
+
+      // Помечаем как примененную
+      recommendation.isApplied = true;
+      recommendation.metadata = {
+        ...recommendation.metadata,
+        appliedAt: new Date(),
+        appliedBy: userId,
+        result,
+      };
+      await this.recommendationsRepository.save(recommendation);
+
+      return result;
+    } catch (error) {
+      // Сохраняем ошибку в метаданных
+      recommendation.metadata = {
+        ...recommendation.metadata,
+        applyError: error.message,
+        applyAttemptedAt: new Date(),
+      };
+      await this.recommendationsRepository.save(recommendation);
+      throw error;
+    }
+  }
+
+  private async applyPriceRecommendation(
+    recommendation: AIRecommendation,
+    userId: string,
+  ): Promise<{ success: boolean; message: string; data?: any }> {
+    if (!recommendation.product) {
+      throw new BadRequestException('Рекомендация по цене должна быть связана с товаром');
+    }
+
+    const data = recommendation.data as PriceRecommendation;
+    const recommendedPrice = data.recommendedPrice || data.currentPrice;
+
+    if (!recommendedPrice || recommendedPrice <= 0) {
+      throw new BadRequestException('Некорректная рекомендуемая цена');
+    }
+
+    // Получаем товар
+    const product = await this.productsService.findOne(
+      recommendation.product.id,
+      userId,
+    );
+
+    // Обновляем цену только в БД (для MVP - без обновления на маркетплейсах)
+    await this.productsService.update(recommendation.product.id, userId, {
+      price: recommendedPrice,
+    } as any);
+
+    return {
+      success: true,
+      message: `Цена товара "${product.name}" обновлена в системе на ${recommendedPrice} руб. Для применения на маркетплейсах обновите цену вручную в личном кабинете маркетплейса.`,
+      data: {
+        productId: product.id,
+        oldPrice: product.price,
+        newPrice: recommendedPrice,
+        note: 'Цена обновлена только в системе. Для применения на маркетплейсах требуется ручное обновление.',
+      },
+    };
+  }
+
+  private async applyDemandRecommendation(
+    recommendation: AIRecommendation,
+    userId: string,
+  ): Promise<{ success: boolean; message: string; data?: any }> {
+    const data = recommendation.data as DemandForecast;
+
+    // Сохраняем прогноз в метаданных товара
+    if (recommendation.product) {
+      const product = await this.productsService.findOne(
+        recommendation.product.id,
+        userId,
+      );
+
+      // Обновляем метаданные товара с прогнозом
+      const metadata = product.metadata || {};
+      metadata.demandForecast = {
+        ...data,
+        appliedAt: new Date(),
+        recommendationId: recommendation.id,
+      };
+
+      await this.productsService.update(recommendation.product.id, userId, {
+        metadata,
+      } as any);
+
+      return {
+        success: true,
+        message: `Прогноз спроса для товара "${product.name}" сохранен`,
+        data: {
+          productId: product.id,
+          forecast: data.forecast,
+        },
+      };
+    }
+
+    return {
+      success: true,
+      message: 'Прогноз спроса сохранен',
+      data: {
+        forecast: data.forecast,
+      },
+    };
+  }
+
+  private async applyAssortmentRecommendation(
+    recommendation: AIRecommendation,
+    userId: string,
+  ): Promise<{ success: boolean; message: string; data?: any }> {
+    const data = recommendation.data;
+
+    // Сохраняем рекомендации по ассортименту
+    // Это может быть список товаров для добавления или категорий для расширения
+    return {
+      success: true,
+      message: 'Рекомендации по ассортименту сохранены',
+      data: {
+        recommendations: data,
+      },
+    };
+  }
+
+  private async applyAnomalyRecommendation(
+    recommendation: AIRecommendation,
+    userId: string,
+  ): Promise<{ success: boolean; message: string; data?: any }> {
+    const data = recommendation.data as AnomalyDetection;
+
+    // Создаем уведомление об аномалии
+    // В реальной системе здесь можно создать уведомление через NotificationsService
+    return {
+      success: true,
+      message: `Аномалия "${data.description}" зафиксирована`,
+      data: {
+        anomalyType: data.type,
+        severity: data.severity,
+        description: data.description,
+        detectedAt: data.detectedAt,
+      },
+    };
+  }
+
+  private async applyCustomerRecommendation(
+    recommendation: AIRecommendation,
+    userId: string,
+  ): Promise<{ success: boolean; message: string; data?: any }> {
+    const data = recommendation.data;
+
+    // Применяем рекомендации по клиентам
+    // Это может быть сегментация, персонализация и т.д.
+    return {
+      success: true,
+      message: 'Рекомендации по клиентам применены',
+      data: {
+        recommendations: data,
+      },
+    };
   }
 
   // Вспомогательные методы

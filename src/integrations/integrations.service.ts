@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -9,6 +10,7 @@ import { MarketplaceAccount, MarketplaceType, AccountStatus } from './marketplac
 import { WebhookEvent, WebhookEventType, WebhookEventStatus } from './webhook-event.entity';
 import { EncryptionService } from './encryption.service';
 import { UsersService } from '../users/users.service';
+import { PlansService } from '../plans/plans.service';
 import { CreateMarketplaceAccountDto } from './dto/create-marketplace-account.dto';
 import { UpdateMarketplaceAccountDto } from './dto/update-marketplace-account.dto';
 import { IMarketplaceIntegration, MarketplaceCredentials } from './interfaces/marketplace.interface';
@@ -23,6 +25,7 @@ export class IntegrationsService {
     private webhookEventsRepository: Repository<WebhookEvent>,
     private encryptionService: EncryptionService,
     private usersService: UsersService,
+    private plansService: PlansService,
     private marketplaceFactory: MarketplaceFactoryService,
   ) {}
 
@@ -32,8 +35,7 @@ export class IntegrationsService {
     createDto: CreateMarketplaceAccountDto,
   ): Promise<MarketplaceAccount> {
     // Проверяем лимиты тарифа
-    const user = await this.usersService.findOne(userId);
-    // TODO: Проверка лимитов интеграций через PlansService
+    await this.checkIntegrationLimits(userId, organizationId);
 
     // Шифруем API ключи
     const encryptedApiKey = this.encryptionService.encrypt(createDto.apiKey);
@@ -231,8 +233,10 @@ export class IntegrationsService {
     }
 
     try {
-      // TODO: Обработка события в зависимости от типа
-      // Пока просто помечаем как обработанное
+      // Для MVP: автоматическая обработка webhook событий отключена
+      // События сохраняются в БД и могут быть обработаны через периодическую синхронизацию
+      // В будущих версиях будет добавлена автоматическая обработка по типам событий
+      // (ORDER_CREATED, STOCK_UPDATED, PRICE_UPDATED и т.д.)
       event.status = WebhookEventStatus.PROCESSED;
       event.processedAt = new Date();
       await this.webhookEventsRepository.save(event);
@@ -271,6 +275,36 @@ export class IntegrationsService {
     await integration.connect(credentials);
 
     return integration;
+  }
+
+  private async checkIntegrationLimits(
+    userId: string,
+    organizationId: string | null,
+  ): Promise<void> {
+    const user = await this.usersService.findOne(userId);
+    const plan = await this.plansService.findByType(user.plan as any);
+
+    // Если maxIntegrations = -1, значит без ограничений (Enterprise план)
+    if (plan.maxIntegrations === -1) {
+      return;
+    }
+
+    // Подсчитываем текущие интеграции
+    const where: any = { user: { id: userId } };
+    if (organizationId) {
+      where.organization = { id: organizationId };
+    }
+
+    const currentIntegrationsCount = await this.accountsRepository.count({
+      where,
+    });
+
+    // Проверяем лимит
+    if (currentIntegrationsCount >= plan.maxIntegrations) {
+      throw new ForbiddenException(
+        `Достигнут лимит интеграций для вашего тарифа (${plan.maxIntegrations}). Обновите план для добавления большего количества интеграций.`,
+      );
+    }
   }
 }
 

@@ -116,5 +116,26 @@ export class NotificationsController {
   unregisterTelegramChat(@Body('chatId') chatId: number) {
     return this.notificationsService.unregisterTelegramChat(chatId);
   }
+
+  @Post('push/subscribe')
+  @ApiOperation({ summary: 'Подписаться на push-уведомления' })
+  subscribePush(
+    @Request() req,
+    @Body() subscriptionData: any,
+  ) {
+    // TODO: Сохранить subscription в БД для отправки push-уведомлений
+    // Пока просто возвращаем успех
+    return { message: 'Push подписка зарегистрирована', success: true };
+  }
+
+  @Post('push/unsubscribe')
+  @ApiOperation({ summary: 'Отписаться от push-уведомлений' })
+  unsubscribePush(
+    @Request() req,
+    @Body() subscriptionData: any,
+  ) {
+    // TODO: Удалить subscription из БД
+    return { message: 'Push подписка отменена', success: true };
+  }
 }
 

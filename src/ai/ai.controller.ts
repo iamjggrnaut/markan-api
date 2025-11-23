@@ -167,9 +167,8 @@ export class AIController {
 
   @Post('recommendations/:id/apply')
   @ApiOperation({ summary: 'Применить рекомендацию' })
-  applyRecommendation(@Request() req, @Param('id') id: string) {
-    // TODO: Реализовать применение рекомендации
-    return { message: 'Recommendation applied', id };
+  async applyRecommendation(@Request() req, @Param('id') id: string) {
+    return this.aiService.applyRecommendation(id, req.user.userId);
   }
 }
 

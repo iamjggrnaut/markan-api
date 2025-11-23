@@ -167,6 +167,33 @@ export class AuthService {
     return { message: 'Пароль успешно изменен' };
   }
 
+  async changePassword(userId: string, oldPassword: string, newPassword: string) {
+    const user = await this.usersService.findOne(userId);
+    
+    // Проверяем старый пароль
+    const isPasswordValid = await bcrypt.compare(oldPassword, user.password);
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Неверный текущий пароль');
+    }
+
+    // Хешируем новый пароль
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    // Обновляем пароль
+    await this.usersService.update(userId, {
+      password: hashedPassword,
+    } as any);
+
+    // Логируем активность
+    await this.usersService.logActivity(
+      userId,
+      ActivityType.PASSWORD_CHANGE,
+      { action: 'password_change' },
+    );
+
+    return { message: 'Пароль успешно изменен' };
+  }
+
   private async generateTokens(user: any, ipAddress?: string, userAgent?: string) {
     const payload = { 
       email: user.email, 

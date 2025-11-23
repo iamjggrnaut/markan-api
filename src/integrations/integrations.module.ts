@@ -9,11 +9,13 @@ import { MarketplaceAccount } from './marketplace-account.entity';
 import { WebhookEvent } from './webhook-event.entity';
 import { EncryptionService } from './encryption.service';
 import { MarketplaceFactoryService } from './marketplaces/marketplace-factory.service';
+import { WebhookValidationService } from './webhook-validation.service';
 import { WildberriesService } from './marketplaces/wildberries/wildberries.service';
 import { OzonService } from './marketplaces/ozon/ozon.service';
 import { YandexMarketService } from './marketplaces/yandex-market/yandex-market.service';
 import { UsersModule } from '../users/users.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
+import { PlansModule } from '../plans/plans.module';
 
 @Module({
   imports: [
@@ -23,6 +25,7 @@ import { OrganizationsModule } from '../organizations/organizations.module';
     }),
     UsersModule,
     OrganizationsModule,
+    PlansModule,
   ],
   controllers: [IntegrationsController, WebhooksController],
   providers: [
@@ -33,6 +36,7 @@ import { OrganizationsModule } from '../organizations/organizations.module';
     OzonService,
     YandexMarketService,
     WebhookRetryProcessor,
+    WebhookValidationService,
   ],
   exports: [IntegrationsService, EncryptionService],
 })

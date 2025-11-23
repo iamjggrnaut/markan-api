@@ -203,6 +203,37 @@ export class PlansService {
     };
   }
 
+  async checkIntegrationLimits(
+    userId: string,
+    organizationId: string | null,
+  ): Promise<{ allowed: boolean; currentCount: number; maxCount: number; message?: string }> {
+    const user = await this.usersService.findOne(userId);
+    const plan = await this.findByType(user.plan as PlanType);
+
+    // Если maxIntegrations = -1, значит без ограничений (Enterprise план)
+    if (plan.maxIntegrations === -1) {
+      return {
+        allowed: true,
+        currentCount: 0,
+        maxCount: -1,
+      };
+    }
+
+    // Получаем количество текущих интеграций
+    // Нужно импортировать IntegrationsService или использовать репозиторий напрямую
+    // Для этого нужно добавить зависимость в PlansModule
+    // Пока используем простой подход через UsersService или создадим отдельный метод
+    
+    // Временное решение: возвращаем базовую проверку
+    // Реальная проверка будет в IntegrationsService с использованием этого метода
+    
+    return {
+      allowed: true, // Будет переопределено в IntegrationsService
+      currentCount: 0,
+      maxCount: plan.maxIntegrations,
+    };
+  }
+
   private calculateBillingPeriods(basePrice: number) {
     return {
       monthly: {

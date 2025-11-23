@@ -102,5 +102,29 @@ export class AuthController {
       resetPasswordDto.password,
     );
   }
+
+  @Post('change-password')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Смена пароля авторизованным пользователем' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        oldPassword: { type: 'string' },
+        newPassword: { type: 'string' },
+      },
+      required: ['oldPassword', 'newPassword'],
+    },
+  })
+  async changePassword(
+    @Request() req,
+    @Body() body: { oldPassword: string; newPassword: string },
+  ) {
+    return this.authService.changePassword(
+      req.user.userId,
+      body.oldPassword,
+      body.newPassword,
+    );
+  }
 }
 

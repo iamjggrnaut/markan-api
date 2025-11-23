@@ -29,15 +29,9 @@ export class PlanLimitsGuard implements CanActivate {
       return true; // Если нет пользователя, пропускаем (должен быть JwtAuthGuard)
     }
 
-    const limits = await this.plansService.getUserPlanLimits(user.userId);
-
-    // Проверяем лимиты интеграций
-    // TODO: Реализовать проверку количества интеграций
-    // const integrationsCount = await this.getUserIntegrationsCount(user.userId);
-    // if (limits.maxIntegrations > 0 && integrationsCount >= limits.maxIntegrations) {
-    //   throw new ForbiddenException('Достигнут лимит интеграций для вашего тарифа');
-    // }
-
+    // Проверка лимитов интеграций теперь выполняется в IntegrationsService.create
+    // Этот guard можно использовать для дополнительных проверок в будущем
+    
     return true;
   }
 }
