@@ -57,6 +57,9 @@ export class Product {
   @Column({ type: 'json', nullable: true })
   attributes: any; // Дополнительные атрибуты товара
 
+  @Column({ type: 'json', nullable: true })
+  metadata: any; // Метаданные товара (прогнозы, рекомендации и т.д.)
+
   @Column({ default: 0 })
   totalStock: number; // Общий остаток
 
