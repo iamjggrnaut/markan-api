@@ -193,7 +193,11 @@ export class SyncProcessor {
     const startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const endDate = now;
 
-    const stages = [
+    const stages: Array<{
+      key: string;
+      progress: number;
+      loader: () => Promise<any>;
+    }> = [
       {
         key: 'sales',
         progress: 20,
