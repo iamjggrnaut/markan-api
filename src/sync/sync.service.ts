@@ -23,7 +23,9 @@ export class SyncService {
     type: SyncJobType,
     params?: any,
   ): Promise<SyncJob> {
-    const account = await this.integrationsService.findOne(accountId, '');
+    const account = await this.integrationsService.accountsRepository.findOne({
+      where: { id: accountId },
+    });
 
     if (!account) {
       throw new NotFoundException(`Account with ID ${accountId} not found`);
