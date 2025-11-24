@@ -11,6 +11,7 @@ import { ProductStock } from './product-stock.entity';
 import { ProductSale } from './product-sale.entity';
 import { StockHistory } from './stock-history.entity';
 import { IntegrationsService } from '../integrations/integrations.service';
+import { MarketplaceAccount } from '../integrations/marketplace-account.entity';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductFilterDto } from './dto/product-filter.dto';
@@ -784,11 +785,12 @@ export class ProductsService {
 
   // Методы для прямого сохранения данных из синхронизации (без создания нового экземпляра интеграции)
   async saveProducts(
-    accountId: string,
-    userId: string,
+    account: MarketplaceAccount,
     productsData: any[],
   ): Promise<{ created: number; updated: number }> {
-    const account = await this.integrationsService.findOne(accountId, userId);
+    if (!account || !account.id) {
+      throw new BadRequestException('Account is required for saving products');
+    }
 
     let created = 0;
     let updated = 0;
@@ -797,7 +799,7 @@ export class ProductsService {
       // Ищем существующий товар
       let product = await this.productsRepository.findOne({
         where: {
-          marketplaceAccount: { id: accountId },
+          marketplaceAccount: { id: account.id },
           marketplaceProductId: mpProduct.id,
         },
       });
@@ -840,11 +842,12 @@ export class ProductsService {
   }
 
   async saveSales(
-    accountId: string,
-    userId: string,
+    account: MarketplaceAccount,
     salesData: any[],
   ): Promise<{ created: number }> {
-    const account = await this.integrationsService.findOne(accountId, userId);
+    if (!account || !account.id) {
+      throw new BadRequestException('Account is required for saving sales');
+    }
 
     let created = 0;
 
@@ -852,7 +855,7 @@ export class ProductsService {
       // Находим товар
       let product = await this.productsRepository.findOne({
         where: {
-          marketplaceAccount: { id: accountId },
+          marketplaceAccount: { id: account.id },
           marketplaceProductId: sale.productId,
         },
       });
@@ -921,11 +924,12 @@ export class ProductsService {
   }
 
   async saveStock(
-    accountId: string,
-    userId: string,
+    account: MarketplaceAccount,
     stockData: any[],
   ): Promise<{ updated: number }> {
-    const account = await this.integrationsService.findOne(accountId, userId);
+    if (!account || !account.id) {
+      throw new BadRequestException('Account is required for saving stock');
+    }
 
     let updated = 0;
 
@@ -942,7 +946,7 @@ export class ProductsService {
       // Находим товар
       const product = await this.productsRepository.findOne({
         where: {
-          marketplaceAccount: { id: accountId },
+          marketplaceAccount: { id: account.id },
           marketplaceProductId: productId,
         },
       });
@@ -1000,10 +1004,12 @@ export class ProductsService {
   }
 
   async saveOrders(
-    accountId: string,
-    userId: string,
+    account: MarketplaceAccount,
     ordersData: any[],
   ): Promise<{ saved: number }> {
+    if (!account || !account.id) {
+      throw new BadRequestException('Account is required for saving orders');
+    }
     // Orders обычно сохраняются как sales, поэтому просто возвращаем количество
     // В будущем можно добавить отдельную таблицу для заказов, если потребуется
     return { saved: ordersData.length };

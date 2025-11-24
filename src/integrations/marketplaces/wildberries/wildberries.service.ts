@@ -245,6 +245,16 @@ export class WildberriesService implements IMarketplaceIntegration {
       
       throw new BadRequestException('No available API clients for stock fetching');
     } catch (error) {
+      const status = error?.response?.status;
+      const isAuthError = status === 401 || status === 403;
+      
+      if (isAuthError) {
+        // Если это ошибка авторизации, возвращаем пустой массив вместо падения
+        // Это может быть из-за ограниченных прав доступа к stock API
+        this.logger.warn(`Stock API access denied (${status}). This may be due to limited API token permissions. Returning empty stock data.`);
+        return [];
+      }
+      
       this.logger.warn(`Failed to fetch stock via reports API (${error.message}). Trying legacy endpoint...`);
       
       // Пытаемся использовать legacy API как fallback
@@ -253,12 +263,24 @@ export class WildberriesService implements IMarketplaceIntegration {
           const fallbackStock = await this.fetchLegacyStock();
           return fallbackStock;
         } catch (fallbackError) {
+          const fallbackStatus = fallbackError?.response?.status;
+          const isFallbackAuthError = fallbackStatus === 401 || fallbackStatus === 403;
+          
+          if (isFallbackAuthError) {
+            this.logger.warn(`Legacy stock API also access denied (${fallbackStatus}). Returning empty stock data.`);
+            return [];
+          }
+          
           this.logger.error(`Legacy stock API also failed: ${fallbackError.message}`);
-          throw new BadRequestException(`Failed to get stock: ${fallbackError.message}`);
+          // Для некритичных ошибок возвращаем пустой массив вместо падения
+          this.logger.warn('Returning empty stock data due to API errors');
+          return [];
         }
       }
       
-      throw new BadRequestException(`Failed to get stock: ${error.message}`);
+      // Для некритичных ошибок возвращаем пустой массив
+      this.logger.warn(`Returning empty stock data due to error: ${error.message}`);
+      return [];
     }
   }
 
@@ -324,9 +346,31 @@ export class WildberriesService implements IMarketplaceIntegration {
       const legacyCampaigns = await this.fetchLegacyAdCampaigns(params);
       return legacyCampaigns;
     } catch (error) {
+      const status = error?.response?.status;
+      const isAuthError = status === 401 || status === 403;
+      
+      if (isAuthError) {
+        // Если это ошибка авторизации, возвращаем пустой массив
+        this.logger.warn(`Ad campaigns API access denied (${status}). This may be due to limited API token permissions. Returning empty campaigns list.`);
+        return [];
+      }
+      
       this.logger.warn(`Failed to fetch ad campaigns via promotion API (${error.message}). Using legacy fallback...`);
-      const legacyCampaigns = await this.fetchLegacyAdCampaigns(params);
-      return legacyCampaigns;
+      try {
+        const legacyCampaigns = await this.fetchLegacyAdCampaigns(params);
+        return legacyCampaigns;
+      } catch (legacyError) {
+        const legacyStatus = legacyError?.response?.status;
+        const isLegacyAuthError = legacyStatus === 401 || legacyStatus === 403;
+        
+        if (isLegacyAuthError) {
+          this.logger.warn(`Legacy ad campaigns API also access denied (${legacyStatus}). Returning empty campaigns list.`);
+          return [];
+        }
+        
+        this.logger.warn(`Legacy ad campaigns API also failed: ${legacyError.message}. Returning empty campaigns list.`);
+        return [];
+      }
     }
   }
 

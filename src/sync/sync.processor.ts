@@ -56,10 +56,11 @@ export class SyncProcessor {
     syncJob.startedAt = new Date();
     await this.syncJobsRepository.save(syncJob);
 
+    let integration: IMarketplaceIntegration | null = null;
     try {
       // Получаем экземпляр интеграции
       this.logger.log(`Getting integration instance for account ${accountId}...`);
-      const integration = await this.integrationsService.getIntegrationInstance(
+      integration = await this.integrationsService.getIntegrationInstance(
         accountId,
         syncJob.account.user.id,
       );
@@ -80,13 +81,16 @@ export class SyncProcessor {
 
       // Обновляем время последней синхронизации аккаунта
       syncJob.account.lastSyncAt = new Date();
-      syncJob.account.lastSyncStatus = 'success';
+      syncJob.account.lastSyncStatus = result.partialSuccess ? 'partial' : 'success';
       await this.updateAccountSyncMetadata(syncJob.account, params, result);
       await this.integrationsService.accountsRepository.save(syncJob.account);
 
-      this.logger.log(`Sync job ${jobId} completed successfully`);
+      this.logger.log(`Sync job ${jobId} completed ${result.partialSuccess ? 'with partial success' : 'successfully'}`);
 
-      await integration.disconnect();
+      // Отключаем интеграцию только после завершения всех этапов
+      if (integration) {
+        await integration.disconnect();
+      }
     } catch (error) {
       this.logger.error(`Sync job ${jobId} failed: ${error.message}`, error.stack);
 
@@ -99,6 +103,15 @@ export class SyncProcessor {
       await this.integrationsService.accountsRepository.save(syncJob.account);
 
       await this.syncJobsRepository.save(syncJob);
+
+      // Отключаем интеграцию даже в случае ошибки
+      if (integration) {
+        try {
+          await integration.disconnect();
+        } catch (disconnectError) {
+          this.logger.warn(`Failed to disconnect integration: ${disconnectError.message}`);
+        }
+      }
 
       // Пробрасываем ошибку для retry механизма Bull
       throw error;
@@ -209,16 +222,19 @@ export class SyncProcessor {
       key: string;
       progress: number;
       loader: () => Promise<any>;
+      required: boolean; // Критичность этапа
     }> = [
       {
         key: 'products',
         progress: 20,
         loader: () => integration.getProducts({ limit: 10000 }),
+        required: true,
       },
       {
         key: 'stock',
         progress: 40,
         loader: () => integration.getStock(),
+        required: false, // Stock может быть недоступен из-за прав доступа
       },
       {
         key: 'sales',
@@ -229,6 +245,7 @@ export class SyncProcessor {
             endDate,
             limit: 10000,
           }),
+        required: true,
       },
       {
         key: 'orders',
@@ -239,6 +256,7 @@ export class SyncProcessor {
             endDate,
             limit: 10000,
           }),
+        required: false,
       },
       {
         key: 'regional',
@@ -248,10 +266,13 @@ export class SyncProcessor {
             startDate,
             endDate,
           }),
+        required: false,
       },
     ];
 
     result.data = {};
+    result.errors = {};
+    result.partialSuccess = false;
     result.metadata = {
       rangeStart: startDate.toISOString(),
       rangeEnd: endDate.toISOString(),
@@ -260,26 +281,51 @@ export class SyncProcessor {
     let processed = 0;
 
     for (const stage of stages) {
-      const data = await stage.loader();
-      result.data[stage.key] = data;
-
-      // Сохраняем данные в БД
       try {
-        await this.saveStageData(stage.key, data, syncJob.account, syncJob.account.user.id);
+        this.logger.log(`Starting ${stage.key} sync stage...`);
+        const data = await stage.loader();
+        result.data[stage.key] = data;
+
+        // Сохраняем данные в БД
+        try {
+          await this.saveStageData(stage.key, data, syncJob.account, syncJob.account.user.id);
+        } catch (error) {
+          this.logger.warn(`Failed to save ${stage.key} data: ${error.message}`);
+          result.errors[`${stage.key}_save`] = error.message;
+          result.partialSuccess = true;
+          
+          // Если это критичный этап, пробрасываем ошибку
+          if (stage.required) {
+            throw new Error(`Failed to save required stage ${stage.key}: ${error.message}`);
+          }
+        }
+
+        if (Array.isArray(data)) {
+          processed += data.length;
+        } else if (data?.recordsProcessed) {
+          processed += data.recordsProcessed;
+        }
+
+        syncJob.progress = stage.progress;
+        syncJob.recordsProcessed = processed;
+        syncJob.totalRecords = processed;
+        await this.syncJobsRepository.save(syncJob);
+        
+        this.logger.log(`Completed ${stage.key} sync stage: ${Array.isArray(data) ? data.length : 'N/A'} records`);
       } catch (error) {
-        this.logger.warn(`Failed to save ${stage.key} data: ${error.message}`);
+        this.logger.error(`Failed ${stage.key} sync stage: ${error.message}`, error.stack);
+        result.errors[stage.key] = error.message;
+        result.partialSuccess = true;
+        
+        // Если это критичный этап, пробрасываем ошибку
+        if (stage.required) {
+          throw new Error(`Required sync stage ${stage.key} failed: ${error.message}`);
+        }
+        
+        // Для некритичных этапов продолжаем синхронизацию
+        this.logger.warn(`Skipping ${stage.key} stage due to error, continuing with other stages...`);
+        result.data[stage.key] = [];
       }
-
-      if (Array.isArray(data)) {
-        processed += data.length;
-      } else if (data?.recordsProcessed) {
-        processed += data.recordsProcessed;
-      }
-
-      syncJob.progress = stage.progress;
-      syncJob.recordsProcessed = processed;
-      syncJob.totalRecords = processed;
-      await this.syncJobsRepository.save(syncJob);
     }
 
     result.recordsProcessed = processed;
@@ -299,7 +345,7 @@ export class SyncProcessor {
         case 'sales':
           if (Array.isArray(data) && data.length > 0) {
             this.logger.log(`Saving ${data.length} sales records`);
-            const result = await this.productsService.saveSales(account.id, userId, data);
+            const result = await this.productsService.saveSales(account, data);
             this.logger.log(`Saved ${result.created} sales records to database`);
           } else {
             this.logger.warn(`Sales data is empty or not an array`);
@@ -308,7 +354,7 @@ export class SyncProcessor {
         case 'products':
           if (Array.isArray(data) && data.length > 0) {
             this.logger.log(`Saving ${data.length} products`);
-            const result = await this.productsService.saveProducts(account.id, userId, data);
+            const result = await this.productsService.saveProducts(account, data);
             this.logger.log(`Products saved: ${result.created} created, ${result.updated} updated`);
           } else {
             this.logger.warn(`Products data is empty or not an array`);
@@ -317,7 +363,7 @@ export class SyncProcessor {
         case 'stock':
           if (Array.isArray(data) && data.length > 0) {
             this.logger.log(`Saving ${data.length} stock records`);
-            const result = await this.productsService.saveStock(account.id, userId, data);
+            const result = await this.productsService.saveStock(account, data);
             this.logger.log(`Stock updated for ${result.updated} products`);
           } else {
             this.logger.warn(`Stock data is empty or not an array`);
@@ -327,7 +373,7 @@ export class SyncProcessor {
           if (Array.isArray(data) && data.length > 0) {
             this.logger.log(`Received ${data.length} orders (saved as sales)`);
             // Orders обычно сохраняются как sales, но можно добавить отдельную логику в будущем
-            const result = await this.productsService.saveOrders(account.id, userId, data);
+            const result = await this.productsService.saveOrders(account, data);
             this.logger.log(`Orders processed: ${result.saved} records`);
           } else {
             this.logger.warn(`Orders data is empty or not an array`);
