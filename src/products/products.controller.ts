@@ -76,6 +76,32 @@ export class ProductsController {
     );
   }
 
+  @Get('critical-stock')
+  @ApiOperation({ summary: 'Получить товары с критическими остатками' })
+  getCriticalStock(
+    @Request() req,
+    @Query('organizationId') organizationId: string | null,
+    @Query('thresholdDays') thresholdDays?: number,
+  ) {
+    return this.productsService.getCriticalStockProducts(
+      req.user.userId,
+      organizationId || null,
+      thresholdDays ? parseInt(thresholdDays.toString()) : 7,
+    );
+  }
+
+  @Get('reorder-recommendations')
+  @ApiOperation({ summary: 'Получить рекомендации по дозаказу' })
+  getReorderRecommendations(
+    @Request() req,
+    @Query('organizationId') organizationId: string | null,
+  ) {
+    return this.productsService.getReorderRecommendations(
+      req.user.userId,
+      organizationId || null,
+    );
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Получить товар по ID' })
   findOne(@Request() req, @Param('id') id: string) {
@@ -150,32 +176,6 @@ export class ProductsController {
       id,
       req.user.userId,
       limit ? parseInt(limit.toString()) : 100,
-    );
-  }
-
-  @Get('critical-stock')
-  @ApiOperation({ summary: 'Получить товары с критическими остатками' })
-  getCriticalStock(
-    @Request() req,
-    @Query('organizationId') organizationId: string | null,
-    @Query('thresholdDays') thresholdDays?: number,
-  ) {
-    return this.productsService.getCriticalStockProducts(
-      req.user.userId,
-      organizationId || null,
-      thresholdDays ? parseInt(thresholdDays.toString()) : 7,
-    );
-  }
-
-  @Get('reorder-recommendations')
-  @ApiOperation({ summary: 'Получить рекомендации по дозаказу' })
-  getReorderRecommendations(
-    @Request() req,
-    @Query('organizationId') organizationId: string | null,
-  ) {
-    return this.productsService.getReorderRecommendations(
-      req.user.userId,
-      organizationId || null,
     );
   }
 
