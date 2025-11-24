@@ -34,13 +34,15 @@ export class SyncController {
   async startSync(
     @Request() req,
     @Param('accountId') accountId: string,
-    @Body('type') type: SyncJobType = SyncJobType.FULL,
+    @Body('type') type?: string,
     @Body('params') params?: any,
   ) {
     // Проверяем доступ к аккаунту
     await this.integrationsService.findOne(accountId, req.user.userId);
 
-    return this.syncService.createSyncJob(accountId, type, params);
+    const jobType = this.normalizeJobType(type);
+
+    return this.syncService.createSyncJob(accountId, jobType, params);
   }
 
   @Get('accounts/:accountId/jobs')
@@ -98,6 +100,20 @@ export class SyncController {
 
     await this.syncService.cancelSyncJob(jobId);
     return { message: 'Sync job cancelled' };
+  }
+
+  private normalizeJobType(value?: string): SyncJobType {
+    const fallback = SyncJobType.FULL;
+    if (!value) {
+      return fallback;
+    }
+
+    const normalized = value.toLowerCase() as SyncJobType;
+    if ((Object.values(SyncJobType) as string[]).includes(normalized)) {
+      return normalized;
+    }
+
+    return fallback;
   }
 }
 
