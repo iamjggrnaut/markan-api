@@ -294,52 +294,53 @@ export class SyncProcessor {
   ): Promise<void> {
     this.logger.log(`Saving ${stageKey} data for account ${account.id}, records: ${Array.isArray(data) ? data.length : 'N/A'}`);
     
-    switch (stageKey) {
-      case 'sales':
-        if (Array.isArray(data) && data.length > 0) {
-          // Определяем диапазон дат из данных
-          const dates = data.map((s: any) => new Date(s.date)).filter(Boolean);
-          if (dates.length > 0) {
-            const startDate = new Date(Math.min(...dates.map((d: Date) => d.getTime())));
-            const endDate = new Date(Math.max(...dates.map((d: Date) => d.getTime())));
-            this.logger.log(`Saving ${data.length} sales records from ${startDate.toISOString()} to ${endDate.toISOString()}`);
-            const result = await this.productsService.syncSalesFromMarketplace(
-              account.id,
-              userId,
-              startDate,
-              endDate,
-            );
+    try {
+      switch (stageKey) {
+        case 'sales':
+          if (Array.isArray(data) && data.length > 0) {
+            this.logger.log(`Saving ${data.length} sales records`);
+            const result = await this.productsService.saveSales(account.id, userId, data);
             this.logger.log(`Saved ${result.created} sales records to database`);
           } else {
-            this.logger.warn(`No valid dates found in sales data`);
+            this.logger.warn(`Sales data is empty or not an array`);
           }
-        } else {
-          this.logger.warn(`Sales data is empty or not an array`);
-        }
-        break;
-      case 'products':
-        if (Array.isArray(data) && data.length > 0) {
-          this.logger.log(`Saving ${data.length} products`);
-          const result = await this.productsService.syncProductsFromMarketplace(account.id, userId);
-          this.logger.log(`Products sync result: ${result.created} created, ${result.updated} updated`);
-        } else {
-          this.logger.warn(`Products data is empty or not an array`);
-        }
-        break;
-      case 'stock':
-        if (Array.isArray(data) && data.length > 0) {
-          // Для остатков нужно обновить каждый товар
-          // Это уже делается в syncProductsFromMarketplace, но можно добавить отдельную логику
-          this.logger.log(`Stock data received: ${data.length} records`);
-          // Stock обновляется вместе с products, поэтому просто логируем
-        } else {
-          this.logger.warn(`Stock data is empty or not an array`);
-        }
-        break;
-      // orders и regional не требуют отдельного сохранения, они используются для аналитики
-      default:
-        this.logger.debug(`Stage ${stageKey} does not require database saving`);
-        break;
+          break;
+        case 'products':
+          if (Array.isArray(data) && data.length > 0) {
+            this.logger.log(`Saving ${data.length} products`);
+            const result = await this.productsService.saveProducts(account.id, userId, data);
+            this.logger.log(`Products saved: ${result.created} created, ${result.updated} updated`);
+          } else {
+            this.logger.warn(`Products data is empty or not an array`);
+          }
+          break;
+        case 'stock':
+          if (Array.isArray(data) && data.length > 0) {
+            this.logger.log(`Saving ${data.length} stock records`);
+            const result = await this.productsService.saveStock(account.id, userId, data);
+            this.logger.log(`Stock updated for ${result.updated} products`);
+          } else {
+            this.logger.warn(`Stock data is empty or not an array`);
+          }
+          break;
+        case 'orders':
+          if (Array.isArray(data) && data.length > 0) {
+            this.logger.log(`Received ${data.length} orders (saved as sales)`);
+            // Orders обычно сохраняются как sales, но можно добавить отдельную логику в будущем
+            const result = await this.productsService.saveOrders(account.id, userId, data);
+            this.logger.log(`Orders processed: ${result.saved} records`);
+          } else {
+            this.logger.warn(`Orders data is empty or not an array`);
+          }
+          break;
+        // regional не требует отдельного сохранения, используется для аналитики
+        default:
+          this.logger.debug(`Stage ${stageKey} does not require database saving`);
+          break;
+      }
+    } catch (error) {
+      this.logger.error(`Failed to save ${stageKey} data: ${error.message}`, error.stack);
+      throw error;
     }
   }
 

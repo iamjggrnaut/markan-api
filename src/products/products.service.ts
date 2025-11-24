@@ -781,6 +781,233 @@ export class ProductsService {
       return [];
     }
   }
+
+  // Методы для прямого сохранения данных из синхронизации (без создания нового экземпляра интеграции)
+  async saveProducts(
+    accountId: string,
+    userId: string,
+    productsData: any[],
+  ): Promise<{ created: number; updated: number }> {
+    const account = await this.integrationsService.findOne(accountId, userId);
+
+    let created = 0;
+    let updated = 0;
+
+    for (const mpProduct of productsData) {
+      // Ищем существующий товар
+      let product = await this.productsRepository.findOne({
+        where: {
+          marketplaceAccount: { id: accountId },
+          marketplaceProductId: mpProduct.id,
+        },
+      });
+
+      if (product) {
+        // Обновляем существующий товар
+        Object.assign(product, {
+          name: mpProduct.name,
+          sku: mpProduct.sku || product.sku,
+          barcode: mpProduct.barcode || product.barcode,
+          price: mpProduct.price,
+          images: mpProduct.images || [],
+          description: mpProduct.description,
+          lastSyncAt: new Date(),
+        });
+        updated++;
+      } else {
+        // Создаем новый товар
+        product = this.productsRepository.create({
+          marketplaceAccount: account,
+          marketplaceProductId: mpProduct.id,
+          name: mpProduct.name,
+          sku: mpProduct.sku,
+          barcode: mpProduct.barcode,
+          price: mpProduct.price,
+          images: mpProduct.images || [],
+          description: mpProduct.description,
+          totalStock: mpProduct.stock || 0,
+          availableStock: mpProduct.stock || 0,
+          reservedStock: 0,
+          lastSyncAt: new Date(),
+        });
+        created++;
+      }
+
+      await this.productsRepository.save(product);
+    }
+
+    return { created, updated };
+  }
+
+  async saveSales(
+    accountId: string,
+    userId: string,
+    salesData: any[],
+  ): Promise<{ created: number }> {
+    const account = await this.integrationsService.findOne(accountId, userId);
+
+    let created = 0;
+
+    for (const sale of salesData) {
+      // Находим товар
+      let product = await this.productsRepository.findOne({
+        where: {
+          marketplaceAccount: { id: accountId },
+          marketplaceProductId: sale.productId,
+        },
+      });
+
+      // Если товар не найден, создаем его автоматически
+      if (!product) {
+        product = this.productsRepository.create({
+          marketplaceAccount: account,
+          marketplaceProductId: sale.productId,
+          name: sale.productName || `Товар ${sale.productId}`,
+          sku: sale.productId,
+          price: sale.price || 0,
+          totalStock: 0,
+          availableStock: 0,
+          reservedStock: 0,
+          totalRevenue: 0,
+          totalProfit: 0,
+          totalSales: 0,
+          lastSyncAt: new Date(),
+        });
+        product = await this.productsRepository.save(product);
+      }
+
+      // Проверяем, не существует ли уже такая продажа
+      const existingSale = await this.salesRepository.findOne({
+        where: {
+          product: { id: product.id },
+          orderId: sale.orderId,
+          saleDate: sale.date,
+        },
+      });
+
+      if (existingSale) {
+        continue; // Пропускаем дубликаты
+      }
+
+      // Создаем запись о продаже
+      const productSale = this.salesRepository.create({
+        product,
+        marketplaceAccount: account,
+        saleDate: sale.date,
+        quantity: sale.quantity,
+        price: sale.price,
+        totalAmount: sale.totalAmount,
+        costPrice: product.costPrice || 0,
+        profit: sale.totalAmount - (product.costPrice || 0) * sale.quantity,
+        orderId: sale.orderId,
+        region: sale.region,
+        metadata: sale.metadata || {},
+      });
+
+      await this.salesRepository.save(productSale);
+
+      // Обновляем статистику товара
+      product.totalSales += sale.quantity;
+      product.totalRevenue += sale.totalAmount;
+      if (productSale.profit) {
+        product.totalProfit += productSale.profit;
+      }
+
+      await this.productsRepository.save(product);
+      created++;
+    }
+
+    return { created };
+  }
+
+  async saveStock(
+    accountId: string,
+    userId: string,
+    stockData: any[],
+  ): Promise<{ updated: number }> {
+    const account = await this.integrationsService.findOne(accountId, userId);
+
+    let updated = 0;
+
+    // Группируем остатки по товарам
+    const stockByProduct = new Map<string, any[]>();
+    for (const stock of stockData) {
+      if (!stockByProduct.has(stock.productId)) {
+        stockByProduct.set(stock.productId, []);
+      }
+      stockByProduct.get(stock.productId)!.push(stock);
+    }
+
+    for (const [productId, stocks] of stockByProduct.entries()) {
+      // Находим товар
+      const product = await this.productsRepository.findOne({
+        where: {
+          marketplaceAccount: { id: accountId },
+          marketplaceProductId: productId,
+        },
+      });
+
+      if (!product) {
+        continue; // Пропускаем товары, которых нет в БД
+      }
+
+      // Удаляем старые остатки для этого товара
+      await this.stocksRepository.delete({ product: { id: product.id } });
+
+      let totalStock = 0;
+      let reservedStock = 0;
+
+      for (const stock of stocks) {
+        const productStock = this.stocksRepository.create({
+          product,
+          marketplaceAccount: account,
+          warehouseId: stock.warehouseId,
+          warehouseName: stock.warehouseName,
+          quantity: stock.quantity || 0,
+          reservedQuantity: stock.reservedQuantity || 0,
+          availableQuantity: stock.availableQuantity || 0,
+        });
+
+        await this.stocksRepository.save(productStock);
+
+        totalStock += stock.quantity || 0;
+        reservedStock += stock.reservedQuantity || 0;
+      }
+
+      // Сохраняем историю изменения остатков
+      const previousStock = product.totalStock;
+      if (previousStock !== totalStock) {
+        const history = this.stockHistoryRepository.create({
+          product,
+          previousQuantity: previousStock,
+          newQuantity: totalStock,
+          difference: totalStock - previousStock,
+          reason: 'sync',
+        });
+        await this.stockHistoryRepository.save(history);
+      }
+
+      // Обновляем общие остатки товара
+      product.totalStock = totalStock;
+      product.reservedStock = reservedStock;
+      product.availableStock = totalStock - reservedStock;
+      product.lastSyncAt = new Date();
+      await this.productsRepository.save(product);
+      updated++;
+    }
+
+    return { updated };
+  }
+
+  async saveOrders(
+    accountId: string,
+    userId: string,
+    ordersData: any[],
+  ): Promise<{ saved: number }> {
+    // Orders обычно сохраняются как sales, поэтому просто возвращаем количество
+    // В будущем можно добавить отдельную таблицу для заказов, если потребуется
+    return { saved: ordersData.length };
+  }
 }
 
 
