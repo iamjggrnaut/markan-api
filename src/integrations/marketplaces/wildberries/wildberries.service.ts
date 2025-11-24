@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import axios, { AxiosInstance } from 'axios';
 import {
   IMarketplaceIntegration,
@@ -21,6 +21,7 @@ import {
 
 @Injectable()
 export class WildberriesService implements IMarketplaceIntegration {
+  private readonly logger = new Logger(WildberriesService.name);
   private apiClient: AxiosInstance;
   private credentials: MarketplaceCredentials;
   private baseURL = 'https://statistics-api.wildberries.ru';
@@ -70,13 +71,17 @@ export class WildberriesService implements IMarketplaceIntegration {
         ? params.endDate.toISOString().split('T')[0]
         : new Date().toISOString().split('T')[0];
 
-      const response = await this.apiClient.get('/api/v1/supplier/sales', {
-        params: {
-          dateFrom,
-          dateTo,
-          limit: params.limit || 1000,
-        },
-      });
+      const response = await this.requestWithRetry(
+        () =>
+          this.apiClient.get('/api/v1/supplier/sales', {
+            params: {
+              dateFrom,
+              dateTo,
+              limit: params.limit || 1000,
+            },
+          }),
+        'Failed to get sales',
+      );
 
       return this.normalizeSalesData(response.data);
     } catch (error) {
@@ -90,12 +95,16 @@ export class WildberriesService implements IMarketplaceIntegration {
 
   async getProducts(params?: ProductsParams): Promise<ProductData[]> {
     try {
-      const response = await this.apiClient.get('/api/v1/supplier/info', {
-        params: {
-          limit: params?.limit || 1000,
-          offset: params?.offset || 0,
-        },
-      });
+      const response = await this.requestWithRetry(
+        () =>
+          this.apiClient.get('/api/v1/supplier/info', {
+            params: {
+              limit: params?.limit || 1000,
+              offset: params?.offset || 0,
+            },
+          }),
+        'Failed to get products',
+      );
 
       return this.normalizeProductsData(response.data);
     } catch (error) {
@@ -120,11 +129,17 @@ export class WildberriesService implements IMarketplaceIntegration {
 
   async getStock(params?: StockParams): Promise<StockData[]> {
     try {
-      const response = await this.apiClient.get('/api/v1/supplier/stocks', {
-        params: {
-          dateFrom: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-        },
-      });
+      const response = await this.requestWithRetry(
+        () =>
+          this.apiClient.get('/api/v1/supplier/stocks', {
+            params: {
+              dateFrom: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+                .toISOString()
+                .split('T')[0],
+            },
+          }),
+        'Failed to get stock',
+      );
 
       return this.normalizeStockData(response.data);
     } catch (error) {
@@ -141,13 +156,17 @@ export class WildberriesService implements IMarketplaceIntegration {
         ? params.endDate.toISOString().split('T')[0]
         : new Date().toISOString().split('T')[0];
 
-      const response = await this.apiClient.get('/api/v1/supplier/orders', {
-        params: {
-          dateFrom,
-          dateTo,
-          limit: params?.limit || 1000,
-        },
-      });
+      const response = await this.requestWithRetry(
+        () =>
+          this.apiClient.get('/api/v1/supplier/orders', {
+            params: {
+              dateFrom,
+              dateTo,
+              limit: params?.limit || 1000,
+            },
+          }),
+        'Failed to get orders',
+      );
 
       return this.normalizeOrdersData(response.data);
     } catch (error) {
@@ -173,11 +192,16 @@ export class WildberriesService implements IMarketplaceIntegration {
   async getAdCampaigns(params?: AdCampaignsParams): Promise<AdCampaignData[]> {
     try {
       // Wildberries API для рекламы может отличаться
-      const response = await this.apiClient.get('/api/v1/supplier/adverts', {
-        params: {
-          status: params?.status,
-        },
-      });
+      const response = await this.requestWithRetry(
+        () =>
+          this.apiClient.get('/api/v1/supplier/adverts', {
+            params: {
+              status: params?.status,
+            },
+          }),
+        'Failed to get ad campaigns',
+        2,
+      );
 
       return this.normalizeAdCampaignsData(response.data);
     } catch (error) {
@@ -188,12 +212,17 @@ export class WildberriesService implements IMarketplaceIntegration {
 
   async getAdStatistics(campaignId: string, params?: AdStatisticsParams): Promise<AdStatisticsData> {
     try {
-      const response = await this.apiClient.get(`/api/v1/supplier/adverts/${campaignId}/statistics`, {
-        params: {
-          dateFrom: params?.startDate?.toISOString().split('T')[0],
-          dateTo: params?.endDate?.toISOString().split('T')[0],
-        },
-      });
+      const response = await this.requestWithRetry(
+        () =>
+          this.apiClient.get(`/api/v1/supplier/adverts/${campaignId}/statistics`, {
+            params: {
+              dateFrom: params?.startDate?.toISOString().split('T')[0],
+              dateTo: params?.endDate?.toISOString().split('T')[0],
+            },
+          }),
+        'Failed to get ad statistics',
+        2,
+      );
 
       return this.normalizeAdStatisticsData(response.data, campaignId);
     } catch (error) {
@@ -323,6 +352,38 @@ export class WildberriesService implements IMarketplaceIntegration {
       revenue: data.sum || 0,
       roi: data.orders > 0 ? (data.sum / data.orders) : 0,
     };
+  }
+
+  private async requestWithRetry<T>(
+    request: () => Promise<T>,
+    context: string,
+    maxRetries: number = 3,
+  ): Promise<T> {
+    let attempt = 0;
+    let delayMs = 1500;
+
+    while (true) {
+      try {
+        return await request();
+      } catch (error) {
+        const status = error?.response?.status;
+        if (status === 429 && attempt < maxRetries) {
+          this.logger.warn(
+            `${context}: rate limit reached (attempt ${attempt + 1}). Retrying in ${delayMs}ms`,
+          );
+          await this.delay(delayMs);
+          attempt += 1;
+          delayMs *= 2;
+          continue;
+        }
+
+        throw new BadRequestException(`${context}: ${error.message}`);
+      }
+    }
+  }
+
+  private async delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 

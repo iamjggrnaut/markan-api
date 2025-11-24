@@ -174,47 +174,7 @@ export class SyncProcessor {
         break;
 
       case SyncJobType.FULL:
-        // Полная синхронизация всех данных
-        syncJob.progress = 10;
-        await this.syncJobsRepository.save(syncJob);
-
-        const [salesData, productsData, stockData, ordersData, regionalData] = await Promise.all([
-          integration.getSales({
-            startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
-            endDate: new Date(),
-            limit: 10000,
-          }),
-          integration.getProducts({ limit: 10000 }),
-          integration.getStock(),
-          integration.getOrders({
-            startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
-            endDate: new Date(),
-            limit: 10000,
-          }),
-          integration.getRegionalData({
-            startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
-            endDate: new Date(),
-          }),
-        ]);
-
-        result.data = {
-          sales: salesData,
-          products: productsData,
-          stock: stockData,
-          orders: ordersData,
-          regional: regionalData,
-        };
-
-        result.recordsProcessed =
-          salesData.length +
-          productsData.length +
-          stockData.length +
-          ordersData.length +
-          regionalData.length;
-
-        result.totalRecords = result.recordsProcessed;
-        syncJob.progress = 100;
-        await this.syncJobsRepository.save(syncJob);
+        await this.runFullSyncSequentially(integration, syncJob, result);
         break;
 
       default:
@@ -222,6 +182,88 @@ export class SyncProcessor {
     }
 
     return result;
+  }
+
+  private async runFullSyncSequentially(
+    integration: IMarketplaceIntegration,
+    syncJob: SyncJob,
+    result: any,
+  ) {
+    const now = new Date();
+    const startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const endDate = now;
+
+    const stages = [
+      {
+        key: 'sales',
+        progress: 20,
+        loader: () =>
+          integration.getSales({
+            startDate,
+            endDate,
+            limit: 10000,
+          }),
+      },
+      {
+        key: 'products',
+        progress: 40,
+        loader: () => integration.getProducts({ limit: 10000 }),
+      },
+      {
+        key: 'stock',
+        progress: 60,
+        loader: () => integration.getStock(),
+      },
+      {
+        key: 'orders',
+        progress: 80,
+        loader: () =>
+          integration.getOrders({
+            startDate,
+            endDate,
+            limit: 10000,
+          }),
+      },
+      {
+        key: 'regional',
+        progress: 100,
+        loader: () =>
+          integration.getRegionalData({
+            startDate,
+            endDate,
+          }),
+      },
+    ];
+
+    result.data = {};
+    let processed = 0;
+
+    for (const stage of stages) {
+      const data = await stage.loader();
+      result.data[stage.key] = data;
+
+      if (Array.isArray(data)) {
+        processed += data.length;
+      } else if (data?.recordsProcessed) {
+        processed += data.recordsProcessed;
+      }
+
+      syncJob.progress = stage.progress;
+      syncJob.recordsProcessed = processed;
+      syncJob.totalRecords = processed;
+      await this.syncJobsRepository.save(syncJob);
+
+      if (stage.progress < 100) {
+        await this.delay(1500);
+      }
+    }
+
+    result.recordsProcessed = processed;
+    result.totalRecords = processed;
+  }
+
+  private async delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 
