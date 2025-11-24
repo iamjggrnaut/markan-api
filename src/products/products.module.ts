@@ -8,7 +8,6 @@ import { ProductStock } from './product-stock.entity';
 import { ProductSale } from './product-sale.entity';
 import { StockHistory } from './stock-history.entity';
 import { IntegrationsModule } from '../integrations/integrations.module';
-import { SyncModule } from '../sync/sync.module';
 
 @Module({
   imports: [
@@ -20,7 +19,6 @@ import { SyncModule } from '../sync/sync.module';
       StockHistory,
     ]),
     IntegrationsModule,
-    SyncModule,
   ],
   controllers: [ProductsController],
   providers: [ProductsService],
