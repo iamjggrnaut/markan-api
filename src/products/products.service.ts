@@ -125,6 +125,7 @@ export class ProductsService {
       where: { id },
       relations: [
         'marketplaceAccount',
+        'marketplaceAccount.user',
         'category',
         'stocks',
         'sales',
@@ -136,7 +137,7 @@ export class ProductsService {
     }
 
     // Проверка доступа
-    if (product.marketplaceAccount.user.id !== userId) {
+    if (!product.marketplaceAccount || product.marketplaceAccount.user?.id !== userId) {
       throw new NotFoundException('Product not found');
     }
 
@@ -415,42 +416,96 @@ export class ProductsService {
       };
     });
 
+    // Группируем продукты по категориям и считаем агрегированные данные
+    const groupAProducts = abcProducts.filter((p) => p.category === 'A');
+    const groupBProducts = abcProducts.filter((p) => p.category === 'B');
+    const groupCProducts = abcProducts.filter((p) => p.category === 'C');
+
+    const groupARevenue = groupAProducts.reduce(
+      (sum, p) => sum + Number(p.product.totalRevenue || 0),
+      0,
+    );
+    const groupBRevenue = groupBProducts.reduce(
+      (sum, p) => sum + Number(p.product.totalRevenue || 0),
+      0,
+    );
+    const groupCRevenue = groupCProducts.reduce(
+      (sum, p) => sum + Number(p.product.totalRevenue || 0),
+      0,
+    );
+
+    const groupAQuantity = groupAProducts.reduce(
+      (sum, p) => sum + Number(p.product.totalSales || 0),
+      0,
+    );
+    const groupBQuantity = groupBProducts.reduce(
+      (sum, p) => sum + Number(p.product.totalSales || 0),
+      0,
+    );
+    const groupCQuantity = groupCProducts.reduce(
+      (sum, p) => sum + Number(p.product.totalSales || 0),
+      0,
+    );
+
     return {
       total: products.length,
-      categoryA: abcProducts.filter((p) => p.category === 'A').length,
-      categoryB: abcProducts.filter((p) => p.category === 'B').length,
-      categoryC: abcProducts.filter((p) => p.category === 'C').length,
+      categoryA: groupAProducts.length,
+      categoryB: groupBProducts.length,
+      categoryC: groupCProducts.length,
+      groupA: {
+        revenue: groupARevenue,
+        quantity: groupAQuantity,
+        count: groupAProducts.length,
+      },
+      groupB: {
+        revenue: groupBRevenue,
+        quantity: groupBQuantity,
+        count: groupBProducts.length,
+      },
+      groupC: {
+        revenue: groupCRevenue,
+        quantity: groupCQuantity,
+        count: groupCProducts.length,
+      },
       products: abcProducts,
     };
   }
 
   async calculateProfitability(productId: string, userId: string): Promise<any> {
-    const product = await this.findOne(productId, userId);
+    try {
+      const product = await this.findOne(productId, userId);
 
-    const sales = await this.salesRepository.find({
-      where: { product: { id: productId } },
-      order: { saleDate: 'DESC' },
-      take: 1000,
-    });
+      const sales = await this.salesRepository.find({
+        where: { product: { id: productId } },
+        order: { saleDate: 'DESC' },
+        take: 1000,
+      });
 
-    const totalRevenue = sales.reduce(
-      (sum, sale) => sum + Number(sale.totalAmount),
-      0,
-    );
-    const totalCost = sales.reduce(
-      (sum, sale) => sum + Number(sale.costPrice || 0) * sale.quantity,
-      0,
-    );
-    const totalProfit = totalRevenue - totalCost;
-    const profitMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
+      const totalRevenue = sales.reduce(
+        (sum, sale) => sum + Number(sale.totalAmount || 0),
+        0,
+      );
+      const totalCost = sales.reduce(
+        (sum, sale) => sum + Number(sale.costPrice || 0) * sale.quantity,
+        0,
+      );
+      const totalProfit = totalRevenue - totalCost;
+      const profitMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
 
-    return {
-      totalRevenue,
-      totalCost,
-      totalProfit,
-      profitMargin,
-      salesCount: sales.length,
-    };
+      return {
+        totalRevenue,
+        totalCost,
+        totalProfit,
+        profitMargin,
+        salesCount: sales.length,
+      };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      console.error(`Failed to calculate profitability for product ${productId}:`, error);
+      throw new BadRequestException('Ошибка при расчете прибыльности товара');
+    }
   }
 
   async getStockForecast(productId: string, userId: string): Promise<any> {
@@ -509,28 +564,36 @@ export class ProductsService {
   }
 
   async getTurnoverRate(productId: string, userId: string): Promise<number> {
-    const product = await this.findOne(productId, userId);
+    try {
+      const product = await this.findOne(productId, userId);
 
-    // Получаем продажи за последние 90 дней
-    const ninetyDaysAgo = new Date();
-    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+      // Получаем продажи за последние 90 дней
+      const ninetyDaysAgo = new Date();
+      ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
 
-    const sales = await this.salesRepository.find({
-      where: {
-        product: { id: productId },
-        saleDate: Between(ninetyDaysAgo, new Date()),
-      },
-    });
+      const sales = await this.salesRepository.find({
+        where: {
+          product: { id: productId },
+          saleDate: Between(ninetyDaysAgo, new Date()),
+        },
+      });
 
-    const totalSales = sales.reduce((sum, sale) => sum + sale.quantity, 0);
-    const averageStock = product.totalStock;
+      const totalSales = sales.reduce((sum, sale) => sum + (sale.quantity || 0), 0);
+      const averageStock = product.totalStock || 0;
 
-    if (averageStock === 0) {
-      return 0;
+      if (averageStock === 0) {
+        return 0;
+      }
+
+      // Оборачиваемость = (Продажи за период) / (Средний остаток)
+      return Math.round((totalSales / averageStock) * 100) / 100;
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      console.error(`Failed to get turnover rate for product ${productId}:`, error);
+      throw new BadRequestException('Ошибка при расчете оборачиваемости запасов');
     }
-
-    // Оборачиваемость = (Продажи за период) / (Средний остаток)
-    return Math.round((totalSales / averageStock) * 100) / 100;
   }
 
   async getStockHistory(
@@ -538,13 +601,21 @@ export class ProductsService {
     userId: string,
     limit: number = 100,
   ): Promise<StockHistory[]> {
-    await this.findOne(productId, userId); // Проверка доступа
+    try {
+      await this.findOne(productId, userId); // Проверка доступа
 
-    return this.stockHistoryRepository.find({
-      where: { product: { id: productId } },
-      order: { createdAt: 'DESC' },
-      take: limit,
-    });
+      return this.stockHistoryRepository.find({
+        where: { product: { id: productId } },
+        order: { createdAt: 'DESC' },
+        take: limit,
+      });
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      console.error(`Failed to get stock history for product ${productId}:`, error);
+      throw new BadRequestException('Ошибка при получении истории остатков');
+    }
   }
 
   async getCriticalStockProducts(

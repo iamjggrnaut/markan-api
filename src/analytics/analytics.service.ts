@@ -531,58 +531,121 @@ export class AnalyticsService {
     const campaigns: any[] = [];
     const byChannel = new Map<string, { spent: number; revenue: number; campaigns: number }>();
 
+    // Таймаут для всего запроса (30 секунд)
+    const REQUEST_TIMEOUT = 30000;
+    const startTime = Date.now();
+
     // Получаем данные о рекламе из всех интеграций
     for (const account of accounts) {
+      // Проверяем таймаут
+      if (Date.now() - startTime > REQUEST_TIMEOUT) {
+        console.warn(`Ad analytics request timeout after ${REQUEST_TIMEOUT}ms`);
+        break;
+      }
+
+      let integration = null;
       try {
-        const integration = await this.integrationsService.getIntegrationInstance(
+        integration = await this.integrationsService.getIntegrationInstance(
           account.id,
           userId,
         );
 
-        const adCampaigns = await integration.getAdCampaigns({
+        // Таймаут для получения кампаний (10 секунд)
+        const getCampaignsPromise = integration.getAdCampaigns({
           status: 'all',
         });
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Timeout')), 10000)
+        );
 
-        for (const campaign of adCampaigns) {
-          const statistics = await integration.getAdStatistics(campaign.id, {
-            startDate,
-            endDate,
-          });
+        const adCampaigns = await Promise.race([getCampaignsPromise, timeoutPromise]) as any[];
 
-          const spent = statistics.spent || campaign.spent || 0;
-          const revenue = statistics.revenue || 0;
-          const roi = spent > 0 ? ((revenue - spent) / spent) * 100 : 0;
-
-          totalSpent += spent;
-          totalRevenue += revenue;
-
-          campaigns.push({
-            id: campaign.id,
-            name: campaign.name,
-            marketplaceType: account.marketplaceType,
-            spent,
-            revenue,
-            roi,
-            impressions: statistics.impressions || 0,
-            clicks: statistics.clicks || 0,
-            conversions: statistics.conversions || 0,
-            status: campaign.status,
-          });
-
-          // Группируем по маркетплейсам
-          const channel = account.marketplaceType;
-          if (!byChannel.has(channel)) {
-            byChannel.set(channel, { spent: 0, revenue: 0, campaigns: 0 });
+        if (!adCampaigns || adCampaigns.length === 0) {
+          if (integration) {
+            try {
+              await integration.disconnect();
+            } catch (e) {
+              // Игнорируем ошибки отключения
+            }
           }
-          const channelData = byChannel.get(channel);
-          channelData.spent += spent;
-          channelData.revenue += revenue;
-          channelData.campaigns += 1;
+          continue;
         }
 
-        await integration.disconnect();
+        // Ограничиваем количество кампаний для обработки (максимум 50)
+        const campaignsToProcess = adCampaigns.slice(0, 50);
+
+        for (const campaign of campaignsToProcess) {
+          // Проверяем таймаут перед каждой итерацией
+          if (Date.now() - startTime > REQUEST_TIMEOUT) {
+            console.warn(`Ad analytics request timeout during campaign processing`);
+            break;
+          }
+
+          try {
+            // Таймаут для получения статистики (5 секунд на кампанию)
+            const getStatsPromise = integration.getAdStatistics(campaign.id, {
+              startDate,
+              endDate,
+            });
+            const statsTimeoutPromise = new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('Timeout')), 5000)
+            );
+
+            const statistics = await Promise.race([getStatsPromise, statsTimeoutPromise]) as any;
+
+            const spent = statistics?.spent || campaign.spent || 0;
+            const revenue = statistics?.revenue || 0;
+            const roi = spent > 0 ? ((revenue - spent) / spent) * 100 : 0;
+
+            totalSpent += spent;
+            totalRevenue += revenue;
+
+            campaigns.push({
+              id: campaign.id,
+              name: campaign.name,
+              marketplaceType: account.marketplaceType,
+              spent,
+              revenue,
+              roi,
+              impressions: statistics?.impressions || 0,
+              clicks: statistics?.clicks || 0,
+              conversions: statistics?.conversions || 0,
+              status: campaign.status,
+            });
+
+            // Группируем по маркетплейсам
+            const channel = account.marketplaceType;
+            if (!byChannel.has(channel)) {
+              byChannel.set(channel, { spent: 0, revenue: 0, campaigns: 0 });
+            }
+            const channelData = byChannel.get(channel);
+            channelData.spent += spent;
+            channelData.revenue += revenue;
+            channelData.campaigns += 1;
+          } catch (error) {
+            // Пропускаем кампании с ошибками, но продолжаем обработку
+            console.warn(`Failed to get statistics for campaign ${campaign.id}:`, error.message);
+            continue;
+          }
+        }
+
+        if (integration) {
+          try {
+            await integration.disconnect();
+          } catch (e) {
+            // Игнорируем ошибки отключения
+          }
+        }
       } catch (error) {
-        // Пропускаем аккаунты без поддержки рекламы
+        // Пропускаем аккаунты без поддержки рекламы или с ошибками
+        console.warn(`Failed to process account ${account.id} for ad analytics:`, error.message);
+        if (integration) {
+          try {
+            await integration.disconnect();
+          } catch (e) {
+            // Игнорируем ошибки отключения
+          }
+        }
         continue;
       }
     }

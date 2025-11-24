@@ -376,15 +376,44 @@ export class WildberriesService implements IMarketplaceIntegration {
 
   async getAdStatistics(campaignId: string, params?: AdStatisticsParams): Promise<AdStatisticsData> {
     if (!this.advertClient) {
-      throw new BadRequestException('Wildberries advert API client not initialized. Call connect() first.');
+      this.logger.warn('Wildberries advert API client not initialized. Returning empty statistics.');
+      return this.normalizeAdStatisticsData({}, campaignId);
     }
     try {
       const stats = await this.fetchAdvertStatistics(campaignId, params);
       return stats;
     } catch (error) {
+      const status = error?.response?.status;
+      const isAuthError = status === 401 || status === 403;
+      const isTimeout = error.code === 'ECONNABORTED' || error.message?.includes('timeout');
+      
+      if (isAuthError) {
+        this.logger.warn(`Ad statistics API access denied (${status}). Returning empty statistics.`);
+        return this.normalizeAdStatisticsData({}, campaignId);
+      }
+      
+      if (isTimeout) {
+        this.logger.warn(`Ad statistics request timeout for campaign ${campaignId}. Returning empty statistics.`);
+        return this.normalizeAdStatisticsData({}, campaignId);
+      }
+      
       this.logger.warn(`Failed to fetch advert statistics via promotion API (${error.message}). Trying legacy endpoint...`);
-      const legacyStats = await this.fetchLegacyAdStatistics(campaignId, params);
-      return legacyStats;
+      try {
+        const legacyStats = await this.fetchLegacyAdStatistics(campaignId, params);
+        return legacyStats;
+      } catch (legacyError) {
+        const legacyStatus = legacyError?.response?.status;
+        const isLegacyAuthError = legacyStatus === 401 || legacyStatus === 403;
+        const isLegacyTimeout = legacyError.code === 'ECONNABORTED' || legacyError.message?.includes('timeout');
+        
+        if (isLegacyAuthError || isLegacyTimeout) {
+          this.logger.warn(`Legacy ad statistics API also failed (${legacyStatus || 'timeout'}). Returning empty statistics.`);
+          return this.normalizeAdStatisticsData({}, campaignId);
+        }
+        
+        this.logger.warn(`Legacy ad statistics API also failed: ${legacyError.message}. Returning empty statistics.`);
+        return this.normalizeAdStatisticsData({}, campaignId);
+      }
     }
   }
 
