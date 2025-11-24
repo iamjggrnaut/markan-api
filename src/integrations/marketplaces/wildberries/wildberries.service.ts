@@ -69,6 +69,9 @@ export class WildberriesService implements IMarketplaceIntegration {
   }
 
   async getSales(params: SalesParams): Promise<SalesData[]> {
+    if (!this.apiClient) {
+      throw new BadRequestException('Wildberries API client not initialized. Call connect() first.');
+    }
     try {
       const dateFrom = params.startDate
         ? params.startDate.toISOString().split('T')[0]
@@ -102,6 +105,9 @@ export class WildberriesService implements IMarketplaceIntegration {
   }
 
   async getProducts(params?: ProductsParams): Promise<ProductData[]> {
+    if (!this.apiClient) {
+      throw new BadRequestException('Wildberries API client not initialized. Call connect() first.');
+    }
     try {
       const response = await this.requestWithRetry(
         () =>
@@ -136,6 +142,9 @@ export class WildberriesService implements IMarketplaceIntegration {
   }
 
   async getStock(params?: StockParams): Promise<StockData[]> {
+    if (!this.apiClient) {
+      throw new BadRequestException('Wildberries API client not initialized. Call connect() first.');
+    }
     try {
       const response = await this.requestWithRetry(
         () =>
@@ -156,6 +165,9 @@ export class WildberriesService implements IMarketplaceIntegration {
   }
 
   async getOrders(params?: OrdersParams): Promise<OrderData[]> {
+    if (!this.apiClient) {
+      throw new BadRequestException('Wildberries API client not initialized. Call connect() first.');
+    }
     try {
       const dateFrom = params?.startDate
         ? params.startDate.toISOString().split('T')[0]
@@ -200,6 +212,9 @@ export class WildberriesService implements IMarketplaceIntegration {
   }
 
   async getAdCampaigns(params?: AdCampaignsParams): Promise<AdCampaignData[]> {
+    if (!this.apiClient) {
+      return []; // Для рекламы возвращаем пустой массив, если не подключено
+    }
     try {
       // Wildberries API для рекламы может отличаться
       const response = await this.requestWithRetry(
@@ -221,6 +236,9 @@ export class WildberriesService implements IMarketplaceIntegration {
   }
 
   async getAdStatistics(campaignId: string, params?: AdStatisticsParams): Promise<AdStatisticsData> {
+    if (!this.apiClient) {
+      throw new BadRequestException('Wildberries API client not initialized. Call connect() first.');
+    }
     try {
       const response = await this.requestWithRetry(
         () =>

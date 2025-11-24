@@ -7,6 +7,7 @@ import { SyncJob, SyncJobType, SyncJobStatus } from './sync-job.entity';
 import { IntegrationsService } from '../integrations/integrations.service';
 import { IMarketplaceIntegration } from '../integrations/interfaces/marketplace.interface';
 import { MarketplaceAccount } from '../integrations/marketplace-account.entity';
+import { ProductsService } from '../products/products.service';
 import {
   INITIAL_SYNC_DAYS,
   DAY_IN_MS,
@@ -31,6 +32,7 @@ export class SyncProcessor {
     @InjectRepository(SyncJob)
     private syncJobsRepository: Repository<SyncJob>,
     private integrationsService: IntegrationsService,
+    private productsService: ProductsService,
   ) {}
 
   @Process('sync-data')
@@ -259,6 +261,13 @@ export class SyncProcessor {
       const data = await stage.loader();
       result.data[stage.key] = data;
 
+      // Сохраняем данные в БД
+      try {
+        await this.saveStageData(stage.key, data, syncJob.account, syncJob.account.user.id);
+      } catch (error) {
+        this.logger.warn(`Failed to save ${stage.key} data: ${error.message}`);
+      }
+
       if (Array.isArray(data)) {
         processed += data.length;
       } else if (data?.recordsProcessed) {
@@ -273,6 +282,47 @@ export class SyncProcessor {
 
     result.recordsProcessed = processed;
     result.totalRecords = processed;
+  }
+
+  private async saveStageData(
+    stageKey: string,
+    data: any,
+    account: MarketplaceAccount,
+    userId: string,
+  ): Promise<void> {
+    switch (stageKey) {
+      case 'sales':
+        if (Array.isArray(data) && data.length > 0) {
+          // Определяем диапазон дат из данных
+          const dates = data.map((s: any) => new Date(s.date)).filter(Boolean);
+          if (dates.length > 0) {
+            const startDate = new Date(Math.min(...dates.map((d: Date) => d.getTime())));
+            const endDate = new Date(Math.max(...dates.map((d: Date) => d.getTime())));
+            await this.productsService.syncSalesFromMarketplace(
+              account.id,
+              userId,
+              startDate,
+              endDate,
+            );
+          }
+        }
+        break;
+      case 'products':
+        if (Array.isArray(data) && data.length > 0) {
+          await this.productsService.syncProductsFromMarketplace(account.id, userId);
+        }
+        break;
+      case 'stock':
+        if (Array.isArray(data) && data.length > 0) {
+          // Для остатков нужно обновить каждый товар
+          // Это уже делается в syncProductsFromMarketplace, но можно добавить отдельную логику
+          await this.productsService.syncProductsFromMarketplace(account.id, userId);
+        }
+        break;
+      // orders и regional не требуют отдельного сохранения, они используются для аналитики
+      default:
+        break;
+    }
   }
 
   private async delay(ms: number): Promise<void> {

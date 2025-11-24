@@ -8,6 +8,7 @@ import { SyncJob } from './sync-job.entity';
 import { SyncProcessor } from './sync.processor';
 import { IntegrationsModule } from '../integrations/integrations.module';
 import { MarketplaceAccount } from '../integrations/marketplace-account.entity';
+import { ProductsModule } from '../products/products.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { MarketplaceAccount } from '../integrations/marketplace-account.entity';
     }),
     ScheduleModule.forRoot(),
     IntegrationsModule,
+    ProductsModule,
   ],
   controllers: [SyncController],
   providers: [SyncService, SyncProcessor],
