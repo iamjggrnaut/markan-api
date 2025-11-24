@@ -33,7 +33,7 @@ export class SyncProcessor {
 
     const syncJob = await this.syncJobsRepository.findOne({
       where: { id: jobId },
-      relations: ['account'],
+      relations: ['account', 'account.user'],
     });
 
     if (!syncJob) {
