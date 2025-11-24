@@ -51,6 +51,10 @@ export class WildberriesService implements IMarketplaceIntegration {
       'Content-Type': 'application/json',
     };
 
+    this.logger.log('Initializing Wildberries API clients...');
+
+    // Всегда пересоздаем клиенты, даже если они уже существуют
+    // Это гарантирует, что клиенты будут инициализированы после disconnect()
     this.legacyClient = axios.create({
       baseURL: this.statisticsBaseURL,
       headers,
@@ -81,16 +85,27 @@ export class WildberriesService implements IMarketplaceIntegration {
       timeout: 30000,
     });
 
+    // Проверяем, что все клиенты созданы
+    if (!this.legacyClient || !this.analyticsClient || !this.contentClient || !this.marketplaceClient || !this.advertClient) {
+      this.logger.error('Failed to initialize one or more Wildberries API clients');
+      throw new BadRequestException('Failed to initialize Wildberries API clients');
+    }
+
+    this.logger.log('Wildberries API clients initialized successfully');
+
     return this.testConnection();
   }
 
   async disconnect(): Promise<void> {
+    this.logger.log('Disconnecting Wildberries API clients...');
     this.legacyClient = null;
     this.analyticsClient = null;
     this.contentClient = null;
     this.marketplaceClient = null;
     this.advertClient = null;
     this.credentials = null;
+    this.lastRequestAt = 0;
+    this.logger.log('Wildberries API clients disconnected');
   }
 
   async testConnection(): Promise<boolean> {
@@ -207,22 +222,43 @@ export class WildberriesService implements IMarketplaceIntegration {
   }
 
   async getStock(params?: StockParams): Promise<StockData[]> {
-    if (!this.analyticsClient) {
+    // Проверяем, что клиенты инициализированы
+    if (!this.analyticsClient && !this.legacyClient) {
       throw new BadRequestException('Wildberries API client not initialized. Call connect() first.');
     }
+    
     try {
-      const stock = await this.fetchStockFromReports(params);
-      if (stock.length > 0) {
-        return stock;
+      // Пытаемся получить остатки через новый API
+      if (this.analyticsClient) {
+        const stock = await this.fetchStockFromReports(params);
+        if (stock.length > 0) {
+          return stock;
+        }
+        this.logger.warn('WB stock report returned empty result, falling back to legacy supplier endpoint');
       }
-
-      this.logger.warn('WB stock report returned empty result, falling back to legacy supplier endpoint');
-      const legacyStock = await this.fetchLegacyStock();
-      return legacyStock;
+      
+      // Fallback на legacy API
+      if (this.legacyClient) {
+        const legacyStock = await this.fetchLegacyStock();
+        return legacyStock;
+      }
+      
+      throw new BadRequestException('No available API clients for stock fetching');
     } catch (error) {
       this.logger.warn(`Failed to fetch stock via reports API (${error.message}). Trying legacy endpoint...`);
-      const fallbackStock = await this.fetchLegacyStock();
-      return fallbackStock;
+      
+      // Пытаемся использовать legacy API как fallback
+      if (this.legacyClient) {
+        try {
+          const fallbackStock = await this.fetchLegacyStock();
+          return fallbackStock;
+        } catch (fallbackError) {
+          this.logger.error(`Legacy stock API also failed: ${fallbackError.message}`);
+          throw new BadRequestException(`Failed to get stock: ${fallbackError.message}`);
+        }
+      }
+      
+      throw new BadRequestException(`Failed to get stock: ${error.message}`);
     }
   }
 
@@ -463,6 +499,7 @@ export class WildberriesService implements IMarketplaceIntegration {
 
   private async fetchStockFromReports(params?: StockParams): Promise<StockData[]> {
     if (!this.analyticsClient) {
+      this.logger.warn('Analytics client not initialized, cannot fetch stock from reports');
       return [];
     }
 
@@ -513,7 +550,8 @@ export class WildberriesService implements IMarketplaceIntegration {
 
   private async fetchLegacyStock(): Promise<StockData[]> {
     if (!this.legacyClient) {
-      return [];
+      this.logger.warn('Legacy client not initialized, cannot fetch stock from legacy endpoint');
+      throw new BadRequestException('Legacy API client not initialized');
     }
 
     const response = await this.requestWithRetry(

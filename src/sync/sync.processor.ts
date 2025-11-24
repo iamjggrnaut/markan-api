@@ -58,10 +58,12 @@ export class SyncProcessor {
 
     try {
       // Получаем экземпляр интеграции
+      this.logger.log(`Getting integration instance for account ${accountId}...`);
       const integration = await this.integrationsService.getIntegrationInstance(
         accountId,
         syncJob.account.user.id,
       );
+      this.logger.log(`Integration instance obtained and connected for account ${accountId}`);
 
       // Выполняем синхронизацию в зависимости от типа
       const result = await this.performSync(integration, type, params, syncJob);
