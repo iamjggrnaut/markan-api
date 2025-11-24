@@ -624,15 +624,30 @@ export class ProductsService {
 
       for (const sale of salesData) {
         // Находим товар
-        const product = await this.productsRepository.findOne({
+        let product = await this.productsRepository.findOne({
           where: {
             marketplaceAccount: { id: accountId },
             marketplaceProductId: sale.productId,
           },
         });
 
+        // Если товар не найден, создаем его автоматически
         if (!product) {
-          continue; // Пропускаем, если товар не найден
+          product = this.productsRepository.create({
+            marketplaceAccount: account,
+            marketplaceProductId: sale.productId,
+            name: sale.productName || `Товар ${sale.productId}`,
+            sku: sale.productId,
+            price: sale.price || 0,
+            totalStock: 0,
+            availableStock: 0,
+            reservedStock: 0,
+            totalRevenue: 0,
+            totalProfit: 0,
+            totalSales: 0,
+            lastSyncAt: new Date(),
+          });
+          product = await this.productsRepository.save(product);
         }
 
         // Проверяем, не существует ли уже такая продажа

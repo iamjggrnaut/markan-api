@@ -209,24 +209,24 @@ export class SyncProcessor {
       loader: () => Promise<any>;
     }> = [
       {
-        key: 'sales',
+        key: 'products',
         progress: 20,
+        loader: () => integration.getProducts({ limit: 10000 }),
+      },
+      {
+        key: 'stock',
+        progress: 40,
+        loader: () => integration.getStock(),
+      },
+      {
+        key: 'sales',
+        progress: 60,
         loader: () =>
           integration.getSales({
             startDate,
             endDate,
             limit: 10000,
           }),
-      },
-      {
-        key: 'products',
-        progress: 40,
-        loader: () => integration.getProducts({ limit: 10000 }),
-      },
-      {
-        key: 'stock',
-        progress: 60,
-        loader: () => integration.getStock(),
       },
       {
         key: 'orders',
@@ -290,6 +290,8 @@ export class SyncProcessor {
     account: MarketplaceAccount,
     userId: string,
   ): Promise<void> {
+    this.logger.log(`Saving ${stageKey} data for account ${account.id}, records: ${Array.isArray(data) ? data.length : 'N/A'}`);
+    
     switch (stageKey) {
       case 'sales':
         if (Array.isArray(data) && data.length > 0) {
@@ -298,29 +300,43 @@ export class SyncProcessor {
           if (dates.length > 0) {
             const startDate = new Date(Math.min(...dates.map((d: Date) => d.getTime())));
             const endDate = new Date(Math.max(...dates.map((d: Date) => d.getTime())));
-            await this.productsService.syncSalesFromMarketplace(
+            this.logger.log(`Saving ${data.length} sales records from ${startDate.toISOString()} to ${endDate.toISOString()}`);
+            const result = await this.productsService.syncSalesFromMarketplace(
               account.id,
               userId,
               startDate,
               endDate,
             );
+            this.logger.log(`Saved ${result.created} sales records to database`);
+          } else {
+            this.logger.warn(`No valid dates found in sales data`);
           }
+        } else {
+          this.logger.warn(`Sales data is empty or not an array`);
         }
         break;
       case 'products':
         if (Array.isArray(data) && data.length > 0) {
-          await this.productsService.syncProductsFromMarketplace(account.id, userId);
+          this.logger.log(`Saving ${data.length} products`);
+          const result = await this.productsService.syncProductsFromMarketplace(account.id, userId);
+          this.logger.log(`Products sync result: ${result.created} created, ${result.updated} updated`);
+        } else {
+          this.logger.warn(`Products data is empty or not an array`);
         }
         break;
       case 'stock':
         if (Array.isArray(data) && data.length > 0) {
           // Для остатков нужно обновить каждый товар
           // Это уже делается в syncProductsFromMarketplace, но можно добавить отдельную логику
-          await this.productsService.syncProductsFromMarketplace(account.id, userId);
+          this.logger.log(`Stock data received: ${data.length} records`);
+          // Stock обновляется вместе с products, поэтому просто логируем
+        } else {
+          this.logger.warn(`Stock data is empty or not an array`);
         }
         break;
       // orders и regional не требуют отдельного сохранения, они используются для аналитики
       default:
+        this.logger.debug(`Stage ${stageKey} does not require database saving`);
         break;
     }
   }
