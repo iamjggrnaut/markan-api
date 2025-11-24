@@ -6,6 +6,14 @@ import { Repository } from 'typeorm';
 import { SyncJob, SyncJobType, SyncJobStatus } from './sync-job.entity';
 import { IntegrationsService } from '../integrations/integrations.service';
 import { IMarketplaceIntegration } from '../integrations/interfaces/marketplace.interface';
+import { MarketplaceAccount } from '../integrations/marketplace-account.entity';
+import {
+  INITIAL_SYNC_DAYS,
+  DAY_IN_MS,
+  HISTORY_MONTH_IN_DAYS,
+  CATCH_UP_WINDOW_DAYS,
+  DAILY_SYNC_DAYS,
+} from './sync.constants';
 
 interface SyncJobData {
   jobId: string;
@@ -69,6 +77,7 @@ export class SyncProcessor {
       // Обновляем время последней синхронизации аккаунта
       syncJob.account.lastSyncAt = new Date();
       syncJob.account.lastSyncStatus = 'success';
+      await this.updateAccountSyncMetadata(syncJob.account, params, result);
       await this.integrationsService.accountsRepository.save(syncJob.account);
 
       this.logger.log(`Sync job ${jobId} completed successfully`);
@@ -174,7 +183,7 @@ export class SyncProcessor {
         break;
 
       case SyncJobType.FULL:
-        await this.runFullSyncSequentially(integration, syncJob, result);
+        await this.runFullSyncSequentially(integration, syncJob, result, params);
         break;
 
       default:
@@ -188,10 +197,9 @@ export class SyncProcessor {
     integration: IMarketplaceIntegration,
     syncJob: SyncJob,
     result: any,
+    params?: any,
   ) {
-    const now = new Date();
-    const startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const endDate = now;
+    const { startDate, endDate, mode } = this.resolveFullSyncRange(params);
 
     const stages: Array<{
       key: string;
@@ -240,6 +248,11 @@ export class SyncProcessor {
     ];
 
     result.data = {};
+    result.metadata = {
+      rangeStart: startDate.toISOString(),
+      rangeEnd: endDate.toISOString(),
+      mode,
+    };
     let processed = 0;
 
     for (const stage of stages) {
@@ -256,10 +269,6 @@ export class SyncProcessor {
       syncJob.recordsProcessed = processed;
       syncJob.totalRecords = processed;
       await this.syncJobsRepository.save(syncJob);
-
-      if (stage.progress < 100) {
-        await this.delay(1500);
-      }
     }
 
     result.recordsProcessed = processed;
@@ -268,6 +277,93 @@ export class SyncProcessor {
 
   private async delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private resolveFullSyncRange(params?: any) {
+    const mode = params?.mode || 'INITIAL';
+    const now = new Date();
+    const endDate = params?.endDate ? new Date(params.endDate) : now;
+
+    let defaultRange: number;
+    switch (mode) {
+      case 'DELTA':
+        defaultRange = DAILY_SYNC_DAYS * DAY_IN_MS;
+        break;
+      case 'CATCH_UP':
+        defaultRange = CATCH_UP_WINDOW_DAYS * DAY_IN_MS;
+        break;
+      default:
+        defaultRange = INITIAL_SYNC_DAYS * DAY_IN_MS;
+    }
+
+    const startDate = params?.startDate
+      ? new Date(params.startDate)
+      : new Date(endDate.getTime() - defaultRange);
+
+    return { startDate, endDate, mode };
+  }
+
+  private calculateDesiredHistoryStart(reference: Date = new Date()): Date {
+    const desired = new Date(reference);
+    desired.setTime(desired.getTime() - HISTORY_MONTH_IN_DAYS * DAY_IN_MS);
+    return desired;
+  }
+
+  private async updateAccountSyncMetadata(
+    account: MarketplaceAccount,
+    params: any,
+    result: any,
+  ) {
+    if (!result?.metadata) {
+      return;
+    }
+
+    const metadata = account.metadata || {};
+    const syncState = metadata.syncState || {};
+    const mode = params?.mode || result.metadata.mode || 'INITIAL';
+    const rangeStart = result.metadata.rangeStart ? new Date(result.metadata.rangeStart) : null;
+    const rangeEnd = result.metadata.rangeEnd ? new Date(result.metadata.rangeEnd) : null;
+
+    if (!syncState.desiredHistoryStart) {
+      const reference = rangeEnd || new Date();
+      syncState.desiredHistoryStart = this.calculateDesiredHistoryStart(reference).toISOString();
+    }
+
+    switch (mode) {
+      case 'INITIAL':
+        syncState.initialCompleted = true;
+        if (rangeStart) {
+          syncState.oldestSyncedDate = rangeStart.toISOString();
+        }
+        break;
+      case 'CATCH_UP':
+        if (rangeStart) {
+          if (
+            !syncState.oldestSyncedDate ||
+            new Date(syncState.oldestSyncedDate).getTime() > rangeStart.getTime()
+          ) {
+            syncState.oldestSyncedDate = rangeStart.toISOString();
+          }
+
+          const desired = syncState.desiredHistoryStart
+            ? new Date(syncState.desiredHistoryStart)
+            : this.calculateDesiredHistoryStart(rangeStart);
+
+          syncState.fullHistoryReady = rangeStart.getTime() <= desired.getTime();
+        }
+        break;
+      case 'DELTA':
+        if (rangeEnd) {
+          syncState.lastDailySyncAt = rangeEnd.toISOString();
+        }
+        break;
+      default:
+        break;
+    }
+
+    syncState.lastSyncAt = new Date().toISOString();
+    metadata.syncState = syncState;
+    account.metadata = metadata;
   }
 }
 

@@ -19,12 +19,18 @@ import {
   RegionalData,
 } from '../../interfaces/marketplace.interface';
 
+const WB_RATE_LIMIT_INTERVAL_MS = 61_000;
+const WB_WINDOW_DAYS = 3;
+const MAX_WINDOW_LIMIT = 1000;
+const MAX_RETRIES = 3;
+
 @Injectable()
 export class WildberriesService implements IMarketplaceIntegration {
   private readonly logger = new Logger(WildberriesService.name);
   private apiClient: AxiosInstance;
   private credentials: MarketplaceCredentials;
   private baseURL = 'https://statistics-api.wildberries.ru';
+  private lastRequestAt = 0;
 
   async connect(credentials: MarketplaceCredentials): Promise<boolean> {
     this.credentials = credentials;
@@ -71,19 +77,21 @@ export class WildberriesService implements IMarketplaceIntegration {
         ? params.endDate.toISOString().split('T')[0]
         : new Date().toISOString().split('T')[0];
 
-      const response = await this.requestWithRetry(
-        () =>
+      const sales = await this.fetchByWindows(
+        (windowStart, windowEnd) =>
           this.apiClient.get('/api/v1/supplier/sales', {
             params: {
-              dateFrom,
-              dateTo,
-              limit: params.limit || 1000,
+              dateFrom: windowStart,
+              dateTo: windowEnd,
+              limit: params.limit || MAX_WINDOW_LIMIT,
             },
           }),
+        dateFrom,
+        dateTo,
         'Failed to get sales',
       );
 
-      return this.normalizeSalesData(response.data);
+      return this.normalizeSalesData(sales);
     } catch (error) {
       throw new BadRequestException(`Failed to get sales: ${error.message}`);
     }
@@ -99,7 +107,7 @@ export class WildberriesService implements IMarketplaceIntegration {
         () =>
           this.apiClient.get('/api/v1/supplier/info', {
             params: {
-              limit: params?.limit || 1000,
+              limit: params?.limit || MAX_WINDOW_LIMIT,
               offset: params?.offset || 0,
             },
           }),
@@ -156,19 +164,21 @@ export class WildberriesService implements IMarketplaceIntegration {
         ? params.endDate.toISOString().split('T')[0]
         : new Date().toISOString().split('T')[0];
 
-      const response = await this.requestWithRetry(
-        () =>
+      const orders = await this.fetchByWindows(
+        (windowStart, windowEnd) =>
           this.apiClient.get('/api/v1/supplier/orders', {
             params: {
-              dateFrom,
-              dateTo,
-              limit: params?.limit || 1000,
+              dateFrom: windowStart,
+              dateTo: windowEnd,
+              limit: params?.limit || MAX_WINDOW_LIMIT,
             },
           }),
+        dateFrom,
+        dateTo,
         'Failed to get orders',
       );
 
-      return this.normalizeOrdersData(response.data);
+      return this.normalizeOrdersData(orders);
     } catch (error) {
       throw new BadRequestException(`Failed to get orders: ${error.message}`);
     }
@@ -357,29 +367,86 @@ export class WildberriesService implements IMarketplaceIntegration {
   private async requestWithRetry<T>(
     request: () => Promise<T>,
     context: string,
-    maxRetries: number = 3,
+    maxRetries: number = MAX_RETRIES,
   ): Promise<T> {
     let attempt = 0;
-    let delayMs = 1500;
 
     while (true) {
+      await this.waitForRateLimit();
       try {
-        return await request();
+        const response = await request();
+        this.lastRequestAt = Date.now();
+        return response;
       } catch (error) {
+        this.lastRequestAt = Date.now();
         const status = error?.response?.status;
         if (status === 429 && attempt < maxRetries) {
+          const pause = WB_RATE_LIMIT_INTERVAL_MS * (attempt + 1);
           this.logger.warn(
-            `${context}: rate limit reached (attempt ${attempt + 1}). Retrying in ${delayMs}ms`,
+            `${context}: rate limit reached (attempt ${attempt + 1}). Retrying in ${pause}ms`,
           );
-          await this.delay(delayMs);
+          await this.delay(pause);
           attempt += 1;
-          delayMs *= 2;
           continue;
         }
 
         throw new BadRequestException(`${context}: ${error.message}`);
       }
     }
+  }
+
+  private async fetchByWindows(
+    request: (windowStart: string, windowEnd: string) => Promise<any>,
+    dateFrom: string,
+    dateTo: string,
+    context: string,
+  ): Promise<any[]> {
+    const windows = this.buildDateWindows(dateFrom, dateTo);
+    const aggregated: any[] = [];
+
+    for (const window of windows) {
+      const response = await this.requestWithRetry(
+        () => request(window.start, window.end),
+        context,
+      );
+      aggregated.push(...response.data);
+    }
+
+    return aggregated;
+  }
+
+  private buildDateWindows(start: string, end: string) {
+    const windows = [];
+    let cursor = new Date(start);
+    const endDate = new Date(end);
+
+    while (cursor <= endDate) {
+      const windowEnd = new Date(cursor);
+      windowEnd.setDate(windowEnd.getDate() + WB_WINDOW_DAYS - 1);
+      if (windowEnd > endDate) {
+        windowEnd.setTime(endDate.getTime());
+      }
+
+      windows.push({
+        start: cursor.toISOString().split('T')[0],
+        end: windowEnd.toISOString().split('T')[0],
+      });
+
+      cursor.setDate(cursor.getDate() + WB_WINDOW_DAYS);
+    }
+
+    return windows;
+  }
+
+  private async waitForRateLimit() {
+    const now = Date.now();
+    const elapsed = now - this.lastRequestAt;
+
+    if (this.lastRequestAt === 0 || elapsed >= WB_RATE_LIMIT_INTERVAL_MS) {
+      return;
+    }
+
+    await this.delay(WB_RATE_LIMIT_INTERVAL_MS - elapsed);
   }
 
   private async delay(ms: number): Promise<void> {

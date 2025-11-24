@@ -6,7 +6,14 @@ import { Queue } from 'bull';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SyncJob, SyncJobType, SyncJobStatus } from './sync-job.entity';
 import { IntegrationsService } from '../integrations/integrations.service';
-import { AccountStatus } from '../integrations/marketplace-account.entity';
+import { AccountStatus, MarketplaceAccount } from '../integrations/marketplace-account.entity';
+import {
+  INITIAL_SYNC_DAYS,
+  DAY_IN_MS,
+  CATCH_UP_WINDOW_DAYS,
+  DAILY_SYNC_DAYS,
+  HISTORY_MONTH_IN_DAYS,
+} from './sync.constants';
 
 @Injectable()
 export class SyncService {
@@ -116,54 +123,13 @@ export class SyncService {
   // Периодическая синхронизация активных аккаунтов
   @Cron(CronExpression.EVERY_HOUR)
   async syncActiveAccounts() {
-    const activeAccounts = await this.integrationsService.accountsRepository.find({
-      where: { status: AccountStatus.ACTIVE },
-    });
-
-    for (const account of activeAccounts) {
-      // Проверяем настройки синхронизации
-      const syncSettings = account.syncSettings || {};
-      const autoSync = syncSettings.autoSync !== false; // По умолчанию включено
-
-      if (!autoSync) {
-        continue;
-      }
-
-      // Определяем тип синхронизации
-      const syncType = syncSettings.syncType || SyncJobType.FULL;
-
-      // Проверяем, не запущена ли уже синхронизация
-      const activeJob = await this.syncJobsRepository.findOne({
-        where: {
-          account: { id: account.id },
-          status: SyncJobStatus.PROCESSING,
-        },
-      });
-
-      if (activeJob) {
-        continue; // Пропускаем, если уже идет синхронизация
-      }
-
-      // Создаем задачу синхронизации
-      await this.createSyncJob(account.id, syncType, {
-        scheduled: true,
-      });
-    }
+    await this.scheduleAutoSyncJobs();
   }
 
   // Ежедневная полная синхронизация
   @Cron(CronExpression.EVERY_DAY_AT_3AM)
   async fullSyncAllAccounts() {
-    const activeAccounts = await this.integrationsService.accountsRepository.find({
-      where: { status: AccountStatus.ACTIVE },
-    });
-
-    for (const account of activeAccounts) {
-      await this.createSyncJob(account.id, SyncJobType.FULL, {
-        scheduled: true,
-        fullSync: true,
-      });
-    }
+    await this.scheduleAutoSyncJobs();
   }
 
   // Синхронизация остатков каждые 30 минут
@@ -203,6 +169,143 @@ export class SyncService {
     };
 
     return stats;
+  }
+
+  private async scheduleAutoSyncJobs() {
+    const activeAccounts = await this.integrationsService.accountsRepository.find({
+      where: { status: AccountStatus.ACTIVE },
+    });
+    const now = new Date();
+
+    for (const account of activeAccounts) {
+      if (!this.shouldAutoSync(account)) {
+        continue;
+      }
+
+      if (await this.hasActiveJob(account.id)) {
+        continue;
+      }
+
+      const params = this.buildNextSyncParams(account, now);
+      if (!params) {
+        continue;
+      }
+
+      await this.createSyncJob(account.id, SyncJobType.FULL, params);
+    }
+  }
+
+  private shouldAutoSync(account: MarketplaceAccount): boolean {
+    const syncSettings = account.syncSettings || {};
+    return syncSettings.autoSync !== false;
+  }
+
+  private async hasActiveJob(accountId: string): Promise<boolean> {
+    const activeJob = await this.syncJobsRepository.findOne({
+      where: [
+        {
+          account: { id: accountId },
+          status: SyncJobStatus.PROCESSING,
+        },
+        {
+          account: { id: accountId },
+          status: SyncJobStatus.PENDING,
+        },
+      ],
+    });
+
+    return Boolean(activeJob);
+  }
+
+  private buildNextSyncParams(account: MarketplaceAccount, now: Date) {
+    const syncState = (account.metadata?.syncState as any) || {};
+
+    if (!syncState.initialCompleted) {
+      return this.buildInitialRange(now);
+    }
+
+    const catchUpRange = this.buildCatchUpRange(syncState);
+    if (catchUpRange) {
+      return catchUpRange;
+    }
+
+    return this.buildDeltaRange(syncState, now);
+  }
+
+  private buildInitialRange(now: Date) {
+    const end = now;
+    const start = new Date(end.getTime() - INITIAL_SYNC_DAYS * DAY_IN_MS);
+
+    return {
+      scheduled: true,
+      mode: 'INITIAL',
+      startDate: start.toISOString(),
+      endDate: end.toISOString(),
+    };
+  }
+
+  private buildCatchUpRange(syncState: any) {
+    if (syncState.fullHistoryReady) {
+      return null;
+    }
+
+    const desired =
+      syncState.desiredHistoryStart !== undefined
+        ? new Date(syncState.desiredHistoryStart)
+        : new Date(Date.now() - HISTORY_MONTH_IN_DAYS * DAY_IN_MS);
+
+    if (!syncState.oldestSyncedDate) {
+      return null;
+    }
+
+    const oldestSynced = new Date(syncState.oldestSyncedDate);
+
+    if (oldestSynced.getTime() <= desired.getTime()) {
+      return null;
+    }
+
+    const endDate = new Date(oldestSynced.getTime() - 1);
+
+    if (endDate.getTime() <= desired.getTime()) {
+      return null;
+    }
+
+    const startDate = new Date(
+      Math.max(endDate.getTime() - CATCH_UP_WINDOW_DAYS * DAY_IN_MS, desired.getTime()),
+    );
+
+    return {
+      scheduled: true,
+      mode: 'CATCH_UP',
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+    };
+  }
+
+  private buildDeltaRange(syncState: any, now: Date) {
+    const interval = DAILY_SYNC_DAYS * DAY_IN_MS;
+    const lastDelta = syncState.lastDailySyncAt ? new Date(syncState.lastDailySyncAt) : null;
+
+    if (lastDelta) {
+      if (now.getTime() - lastDelta.getTime() < interval) {
+        return null;
+      }
+
+      return {
+        scheduled: true,
+        mode: 'DELTA',
+        startDate: lastDelta.toISOString(),
+        endDate: now.toISOString(),
+      };
+    }
+
+    const startDate = new Date(now.getTime() - interval);
+    return {
+      scheduled: true,
+      mode: 'DELTA',
+      startDate: startDate.toISOString(),
+      endDate: now.toISOString(),
+    };
   }
 
   private calculateAverageDuration(jobs: SyncJob[]): number | null {
